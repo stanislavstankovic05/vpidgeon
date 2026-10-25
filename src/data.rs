@@ -3,6 +3,7 @@ use std::net::Ipv4Addr;
 use std::net::*;
 use std::string::*;
 use whoami::*;
+#[derive(Clone)]
 pub struct User {
     pub private_ip: Ipv4Addr,
     pub public_ip: Ipv4Addr,
@@ -24,9 +25,9 @@ impl Default for User {
     }
 }
 pub struct Message {
-    sender: User,
-    reply_to: Option<Box<Message>>,
-    content: String,
+    pub sender: User,
+    pub reply_to: Option<Box<Message>>,
+    pub content: String,
 }
 /*
  * Messages will be stored locally.

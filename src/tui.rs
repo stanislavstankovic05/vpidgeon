@@ -1,9 +1,11 @@
 use crate::{
     data::{Message, User},
+    server::create_server,
     tui::ScreenStates::Main,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use local_ip_address::*;
+use num::*;
 use rand::{
     distr::{Distribution, SampleString},
     *,
@@ -13,7 +15,12 @@ use ratatui::{
     widgets::{Block, Borders},
     *,
 };
-use std::{option, path::absolute, str::FromStr};
+use std::{
+    option,
+    path::absolute,
+    str::FromStr,
+    time::{Duration, Instant},
+};
 use whoami::*;
 use x25519_dalek::*;
 /*
@@ -49,7 +56,7 @@ use x25519_dalek::*;
        -----------------------------------------------
 
 */
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 pub enum ScreenStates {
     #[default]
     Main,
@@ -64,6 +71,10 @@ pub struct App {
     messages: Vec<Message>,
     user: User,
     chat_option: i32,
+    input: String,
+    join_code: String,
+    waiting_since: Option<Instant>,
+    vm_status: String,
 }
 
 impl App {
@@ -84,31 +95,64 @@ impl App {
             screen: Main,
             messages: Vec::new(),
             user: User::default(),
-            chat_option: 1,
+            chat_option: 0,
+            input: String::new(),
+            join_code: String::new(),
+            waiting_since: None,
+            vm_status: String::new(),
         }
     }
 
+    /*
+     * border around the whole page, returns the area inside it
+     */
+    fn render_border(&self, frame: &mut Frame) -> Rect {
+        frame.render_widget(
+            Block::new().borders(Borders::ALL).title(" VPidgeon "),
+            frame.area(),
+        );
+
+        let layout_border = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints(vec![Constraint::Percentage((100))])
+            .split(frame.area());
+
+        layout_border[0]
+    }
+
     fn render_main(&self, frame: &mut Frame) {
+        let area = self.render_border(frame);
+
         /*
          * split the area in header, body, footer
          */
-        let header = Constraint::Percentage((30));
-        let footer = Constraint::Percentage((20));
-        let body = Constraint::Percentage((50));
+        let header = Constraint::Length((4));
+        let footer = Constraint::Length((3));
+        let body = Constraint::Min((0));
 
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints(vec![header, body, footer])
-            .split(frame.area());
+            .split(area);
+
+        /*
+         * split the header in username on the left, ip on the right
+         */
+        let layout_header = Layout::default()
+            .direction(Direction::Horizontal)
+            .margin(1)
+            .constraints(vec![Constraint::Min((0)), Constraint::Length((20))])
+            .split(layout[0]);
 
         let layout_body = Layout::default()
             .direction(Direction::Vertical)
             .constraints(vec![
-                Constraint::Percentage((20)),
-                Constraint::Percentage((20)),
-                Constraint::Percentage((20)),
-                Constraint::Percentage((20)),
-                Constraint::Percentage((20)),
+                Constraint::Length((1)),
+                Constraint::Length((3)),
+                Constraint::Length((3)),
+                Constraint::Length((3)),
+                Constraint::Min((0)),
             ])
             .split(layout[1]);
 
@@ -117,14 +161,14 @@ impl App {
                 + self.user.name.as_str(),
         );
 
-        frame.render_widget(
-            Paragraph::new(header_string).block(Block::new().borders(Borders::ALL)),
-            layout[0],
-        );
+        frame.render_widget(Block::new().borders(Borders::ALL), layout[0]);
+
+        frame.render_widget(Paragraph::new(header_string), layout_header[0]);
 
         frame.render_widget(
-            Paragraph::new("VPidgeon \n\n").block(Block::new().borders(Borders::ALL)),
-            layout[0],
+            Paragraph::new(String::from("ip: ") + self.user.private_ip.to_string().as_str())
+                .alignment(Alignment::Right),
+            layout_header[1],
         );
 
         let block1 = Paragraph::new("1. Direct chat").block(Block::new().borders(Borders::ALL));
@@ -134,7 +178,7 @@ impl App {
             } else {
                 block1
             },
-            layout_body[2],
+            layout_body[1],
         );
         let block2 = Paragraph::new("2. Group chat").block(Block::new().borders(Borders::ALL));
         frame.render_widget(
@@ -142,6 +186,16 @@ impl App {
                 block2.block(Block::new().borders(Borders::ALL).red())
             } else {
                 block2
+            },
+            layout_body[2],
+        );
+
+        let block3 = Paragraph::new("3. Join").block(Block::new().borders(Borders::ALL));
+        frame.render_widget(
+            if self.chat_option == 2 {
+                block3.block(Block::new().borders(Borders::ALL).red())
+            } else {
+                block3
             },
             layout_body[3],
         );
@@ -154,18 +208,53 @@ impl App {
         );
     }
 
+    /*
+     * copy of the dummy .env with the generated code, it is uploaded to the vm
+     */
+    fn write_vm_env(&self) -> std::result::Result<(), String> {
+        let template = match std::fs::read_to_string("vm_env.template") {
+            Ok(text) => text,
+            Err(err) => {
+                return Err(
+                    String::from("Couldnt read vm_env.template: ") + err.to_string().as_str()
+                );
+            }
+        };
+        let vm_env = template.replace("CHANGE_ME", self.join_code.as_str());
+        match std::fs::create_dir_all("vm") {
+            Ok(_) => {}
+            Err(err) => {
+                return Err(String::from("Couldnt create the vm folder: ") + err.to_string().as_str());
+            }
+        }
+        match std::fs::write("vm/.env", vm_env) {
+            Ok(_) => Ok(()),
+            Err(err) => Err(String::from("Couldnt write vm/.env: ") + err.to_string().as_str()),
+        }
+    }
+
     pub fn render_single(&self, frame: &mut Frame) {}
     pub fn render_group(&self, frame: &mut Frame) {}
+
     pub fn render_wainting(&self, frame: &mut Frame) {
-        let join_code: String = rand::distr::Alphabetic.sample_string(&mut rand::rng(), 5);
+        let area = self.render_border(frame);
+
         let layout = Layout::default()
             .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Length((4)), Constraint::Min((0))])
+            .split(area);
+
+        /*
+         * center the waiting text in the middle of the body
+         */
+        let layout_body = Layout::default()
+            .direction(Direction::Vertical)
             .constraints(vec![
-                Constraint::Percentage((10)),
-                Constraint::Percentage((55)),
-                Constraint::Percentage((35)),
+                Constraint::Min((0)),
+                Constraint::Length((3)),
+                Constraint::Min((0)),
             ])
-            .split(frame.area());
+            .split(layout[1]);
 
         frame.render_widget(
             Paragraph::new(
@@ -176,14 +265,73 @@ impl App {
             layout[0],
         );
 
-        frame.render_widget(Paragraph::new("Waiting to create conection...."), layout[1]);
+        let seconds = match self.waiting_since {
+            Some(waiting_since) => waiting_since.elapsed().as_secs(),
+            _ => 0,
+        };
+        let time_string = format!("{:02}:{:02}", seconds / 60, seconds % 60);
 
         frame.render_widget(
-            Paragraph::new(String::from("Connection code:") + join_code.as_str()),
-            layout[1],
+            Paragraph::new(
+                String::from("Waiting to create conection....\n")
+                    + time_string.as_str()
+                    + " | Connection code: "
+                    + self.join_code.as_str()
+                    + "\n"
+                    + self.vm_status.as_str(),
+            )
+            .alignment(Alignment::Center),
+            layout_body[1],
         );
     }
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+
+    pub fn render_messaging(&self, frame: &mut Frame) {
+        let area = self.render_border(frame);
+
+        /*
+         * split the area in messages, input
+         */
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![Constraint::Min((0)), Constraint::Length((3))])
+            .split(area);
+
+        /*
+         * show only the last messages that fit in the block
+         */
+        let visible = layout[0].height.saturating_sub(2) as usize;
+        let skip = self.messages.len().saturating_sub(visible);
+
+        let mut messages_string = String::new();
+        for message in self.messages.iter().skip(skip) {
+            messages_string.push_str(message.sender.name.as_str());
+            messages_string.push_str(": ");
+            messages_string.push_str(message.content.as_str());
+            messages_string.push('\n');
+        }
+
+        frame.render_widget(
+            Paragraph::new(messages_string)
+                .block(Block::new().borders(Borders::ALL).title(" Messages ")),
+            layout[0],
+        );
+
+        frame.render_widget(
+            Paragraph::new(self.input.as_str())
+                .block(Block::new().borders(Borders::ALL).title(" Write message ")),
+            layout[1],
+        );
+
+        /*
+         * put the cursor at the end of the text in the input block
+         */
+        frame.set_cursor_position((
+            layout[1].x + 1 + self.input.chars().count() as u16,
+            layout[1].y + 1,
+        ));
+    }
+
+    pub fn run_main(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         loop {
             terminal.draw(|frame| self.render_main(frame))?;
             let key_event = event::read().unwrap().as_key_press_event();
@@ -202,36 +350,153 @@ impl App {
 
             //stop the app
             if key_code == KeyCode::Esc {
+                self.should_quit = true;
                 return Ok(());
             }
             match key_code {
                 KeyCode::Down => {
-                    self.chat_option = (1 - self.chat_option) % 3;
+                    self.chat_option = (self.chat_option + 1) % 3;
                     //print!("pressed down {} ", self.chat_option);
                 }
                 KeyCode::Up => {
-                    self.chat_option = (1 + self.chat_option) % 3;
-                    //print!("pressed up {}\n", self.chat_option);
+                    //println!("before up {}\n", self.chat_option);
+                    self.chat_option = (self.chat_option - 1 + 3) % 3;
+                    //println!("pressed up {}\n", self.chat_option);
                 }
                 KeyCode::Enter => {
-                    print!("to do the show next interface");
+                    self.screen = ScreenStates::Waiting;
                     match self.chat_option {
                         0 => {
-                            terminal.draw(|frame| self.render_single(frame))?;
+                            terminal.clear();
+                            self.screen = ScreenStates::Waiting;
+                            return Ok(());
+                            //terminal.draw(|frame| self.render_single(frame))?;
                         }
                         1 => {
-                            terminal.draw(|frame| self.render_group(frame))?;
+                            terminal.clear();
+                            self.screen = ScreenStates::Waiting;
+                            return Ok(());
+                            //terminal.draw(|frame| self.render_group(frame))?;
                         }
                         2 => {
-                            terminal.draw(|frame| self.render_wainting(frame))?;
+                            terminal.clear();
+                            self.screen = ScreenStates::Waiting;
+                            return Ok(());
+                            //terminal.draw(|frame| self.render_wainting(frame))?;
                         }
                         _ => {
                             print!("")
                         }
                     }
                 }
-                _ => print!("nothing relevant pressed"),
+                _ => {}
             }
         }
+    }
+    pub fn run_waiting(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        self.join_code = rand::distr::Alphabetic.sample_string(&mut rand::rng(), 5);
+        self.waiting_since = Some(Instant::now());
+        //draw once before connecting, because create_server blocks until it ends
+        self.vm_status = String::from("Starting the server on the VM...");
+        terminal.draw(|frame| self.render_wainting(frame))?;
+        //option 2 is Join, the joiner has no vm to start
+        if self.chat_option == 2 {
+            self.vm_status = String::new();
+        } else {
+            self.vm_status = match self.write_vm_env() {
+                Ok(_) => match create_server() {
+                    Ok(message) => message,
+                    Err(message) => message,
+                },
+                Err(message) => message,
+            };
+        }
+        loop {
+            terminal.draw(|frame| self.render_wainting(frame))?;
+            let key_code: KeyCode;
+            //wait at most half a second for a key, so the timer keeps moving
+            if event::poll(Duration::from_millis(500))? {
+                let key_event = event::read().unwrap().as_key_press_event();
+                match key_event {
+                    Some(key_event) => {
+                        //print!("RECORD EVENT HERE {:?}\n", key_event);
+                        key_code = key_event.code;
+                    }
+                    _ => {
+                        key_code = KeyCode::Null;
+                        //print!("do nothing, no key recorded");
+                    }
+                }
+            } else {
+                key_code = KeyCode::Null;
+            }
+            match key_code {
+                KeyCode::Esc => {
+                    self.screen = ScreenStates::Main;
+                    return Ok(());
+                }
+                //no connection yet, Enter opens the messaging page to test it
+                KeyCode::Enter => {
+                    self.screen = ScreenStates::Messaging;
+                    return Ok(());
+                }
+                _ => {
+                    print!("");
+                }
+            }
+        }
+    }
+    pub fn run_messaging(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        loop {
+            terminal.draw(|frame| self.render_messaging(frame))?;
+            let key_code: KeyCode;
+            let key_event = event::read().unwrap().as_key_press_event();
+            match key_event {
+                Some(key_event) => {
+                    key_code = key_event.code;
+                }
+                _ => {
+                    key_code = KeyCode::Null;
+                }
+            }
+            match key_code {
+                KeyCode::Esc => {
+                    self.screen = ScreenStates::Main;
+                    return Ok(());
+                }
+                KeyCode::Char(character) => {
+                    self.input.push(character);
+                }
+                KeyCode::Backspace => {
+                    self.input.pop();
+                }
+                KeyCode::Enter => {
+                    if !self.input.is_empty() {
+                        self.messages.push(Message {
+                            sender: self.user.clone(),
+                            reply_to: None,
+                            content: self.input.clone(),
+                        });
+                        self.input.clear();
+                    }
+                }
+                _ => {
+                    print!("");
+                }
+            }
+        }
+    }
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        loop {
+            if self.should_quit {
+                break;
+            }
+            match self.screen {
+                ScreenStates::Main => self.run_main(terminal)?,
+                ScreenStates::Waiting => self.run_waiting(terminal)?,
+                ScreenStates::Messaging => self.run_messaging(terminal)?,
+            }
+        }
+        Ok(())
     }
 }
