@@ -1,6 +1,8 @@
 use crate::{
     data::{Message, User},
+    client::join_server,
     server::create_server,
+    server::lead_join,
     tui::ScreenStates::Main,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -62,6 +64,7 @@ pub enum ScreenStates {
     Main,
     Waiting,
     Messaging,
+    Join,
 }
 
 #[derive(Default)]
@@ -75,6 +78,11 @@ pub struct App {
     join_code: String,
     waiting_since: Option<Instant>,
     vm_status: String,
+    join_ip: String,
+    join_password: String,
+    join_field: i32,
+    join_status: String,
+    join_result: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
 }
 
 impl App {
@@ -100,6 +108,11 @@ impl App {
             join_code: String::new(),
             waiting_since: None,
             vm_status: String::new(),
+            join_ip: String::new(),
+            join_password: String::new(),
+            join_field: 0,
+            join_status: String::new(),
+            join_result: None,
         }
     }
 
@@ -285,6 +298,72 @@ impl App {
         );
     }
 
+    pub fn render_join(&self, frame: &mut Frame) {
+        let area = self.render_border(frame);
+
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(vec![
+                Constraint::Length((4)),
+                Constraint::Length((3)),
+                Constraint::Length((3)),
+                Constraint::Length((3)),
+                Constraint::Min((0)),
+            ])
+            .split(area);
+
+        frame.render_widget(
+            Paragraph::new(
+                String::from("Join a chat. Write the server ip and the password\nUsername: ")
+                    + self.user.name.as_str(),
+            )
+            .block(Block::new().borders(Borders::ALL)),
+            layout[0],
+        );
+
+        let ip_block = Paragraph::new(self.join_ip.as_str())
+            .block(Block::new().borders(Borders::ALL).title(" Server ip "));
+        frame.render_widget(
+            if self.join_field == 0 {
+                ip_block.block(Block::new().borders(Borders::ALL).title(" Server ip ").red())
+            } else {
+                ip_block
+            },
+            layout[1],
+        );
+
+        let password_block = Paragraph::new(self.join_password.as_str())
+            .block(Block::new().borders(Borders::ALL).title(" Password "));
+        frame.render_widget(
+            if self.join_field == 1 {
+                password_block.block(Block::new().borders(Borders::ALL).title(" Password ").red())
+            } else {
+                password_block
+            },
+            layout[2],
+        );
+
+        frame.render_widget(
+            Paragraph::new(
+                String::from(self.join_status.as_str())
+                    + "\nTab: switch field | Enter: join | Esc: back",
+            ),
+            layout[3],
+        );
+
+        if self.join_field == 0 {
+            frame.set_cursor_position((
+                layout[1].x + 1 + self.join_ip.chars().count() as u16,
+                layout[1].y + 1,
+            ));
+        } else {
+            frame.set_cursor_position((
+                layout[2].x + 1 + self.join_password.chars().count() as u16,
+                layout[2].y + 1,
+            ));
+        }
+    }
+
     pub fn render_messaging(&self, frame: &mut Frame) {
         let area = self.render_border(frame);
 
@@ -380,7 +459,7 @@ impl App {
                         }
                         2 => {
                             terminal.clear();
-                            self.screen = ScreenStates::Waiting;
+                            self.screen = ScreenStates::Join;
                             return Ok(());
                             //terminal.draw(|frame| self.render_wainting(frame))?;
                         }
@@ -403,16 +482,34 @@ impl App {
         if self.chat_option == 2 {
             self.vm_status = String::new();
         } else {
-            self.vm_status = match self.write_vm_env() {
-                Ok(_) => match create_server() {
-                    Ok(message) => message,
-                    Err(message) => message,
-                },
-                Err(message) => message,
+            let started = match self.write_vm_env() {
+                Ok(_) => create_server(),
+                Err(message) => Err(message),
             };
+            match started {
+                Ok(message) => {
+                    self.vm_status = message + ", waiting for the other peers...";
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let code = self.join_code.clone();
+                    std::thread::spawn(move || {
+                        let result = lead_join(code.as_str());
+                        let _ = sender.send(result);
+                    });
+                    self.join_result = Some(receiver);
+                }
+                Err(message) => {
+                    self.vm_status = message;
+                }
+            }
         }
         loop {
             terminal.draw(|frame| self.render_wainting(frame))?;
+            match self.poll_join() {
+                Some(message) => {
+                    self.vm_status = message;
+                }
+                None => {}
+            }
             let key_code: KeyCode;
             //wait at most half a second for a key, so the timer keeps moving
             if event::poll(Duration::from_millis(500))? {
@@ -432,6 +529,7 @@ impl App {
             }
             match key_code {
                 KeyCode::Esc => {
+                    self.join_result = None;
                     self.screen = ScreenStates::Main;
                     return Ok(());
                 }
@@ -443,6 +541,107 @@ impl App {
                 _ => {
                     print!("");
                 }
+            }
+        }
+    }
+    fn poll_join(&mut self) -> Option<String> {
+        let mut answer = None;
+        match &self.join_result {
+            Some(receiver) => match receiver.try_recv() {
+                Ok(result) => {
+                    answer = Some(result);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    answer = Some(Err(String::from("The connection thread stopped")));
+                }
+                Err(_) => {}
+            },
+            None => {}
+        }
+        match answer {
+            Some(result) => {
+                self.join_result = None;
+                match result {
+                    Ok(message) => Some(message),
+                    Err(message) => Some(message),
+                }
+            }
+            None => None,
+        }
+    }
+    pub fn run_join(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        loop {
+            terminal.draw(|frame| self.render_join(frame))?;
+
+            match self.poll_join() {
+                Some(message) => {
+                    self.join_status = message;
+                }
+                None => {}
+            }
+
+            let key_code: KeyCode;
+            if event::poll(Duration::from_millis(500))? {
+                let key_event = event::read().unwrap().as_key_press_event();
+                match key_event {
+                    Some(key_event) => {
+                        key_code = key_event.code;
+                    }
+                    _ => {
+                        key_code = KeyCode::Null;
+                    }
+                }
+            } else {
+                key_code = KeyCode::Null;
+            }
+
+            let joining = self.join_result.is_some();
+            match key_code {
+                KeyCode::Esc => {
+                    self.join_result = None;
+                    self.screen = ScreenStates::Main;
+                    return Ok(());
+                }
+                KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
+                    self.join_field = (self.join_field + 1) % 2;
+                }
+                KeyCode::Char(character) => {
+                    if !joining {
+                        if self.join_field == 0 {
+                            self.join_ip.push(character);
+                        } else {
+                            self.join_password.push(character);
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if !joining {
+                        if self.join_field == 0 {
+                            self.join_ip.pop();
+                        } else {
+                            self.join_password.pop();
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    if !joining {
+                        if self.join_ip.is_empty() || self.join_password.is_empty() {
+                            self.join_status = String::from("Fill the ip and the password");
+                        } else {
+                            let (sender, receiver) = std::sync::mpsc::channel();
+                            let ip = self.join_ip.clone();
+                            let password = self.join_password.clone();
+                            std::thread::spawn(move || {
+                                let result = join_server(ip.as_str(), password.as_str());
+                                let _ = sender.send(result);
+                            });
+                            self.join_result = Some(receiver);
+                            self.join_status =
+                                String::from("Connected, waiting for the other peers...");
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -495,6 +694,7 @@ impl App {
                 ScreenStates::Main => self.run_main(terminal)?,
                 ScreenStates::Waiting => self.run_waiting(terminal)?,
                 ScreenStates::Messaging => self.run_messaging(terminal)?,
+                ScreenStates::Join => self.run_join(terminal)?,
             }
         }
         Ok(())
