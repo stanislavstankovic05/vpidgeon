@@ -1362,6 +1362,7 @@ dependencies = [
  "rand_core 0.6.4",
  "ratatui",
  "sha2",
+ "socket2",
  "ssh2",
  "terminal_size",
  "whoami",

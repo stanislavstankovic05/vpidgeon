@@ -80,9 +80,14 @@ pub struct App {
     vm_status: String,
     join_ip: String,
     join_password: String,
+    psk: String,
     join_field: i32,
+    scroll: usize,
     join_status: String,
-    join_result: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
+    join_result: Option<
+        std::sync::mpsc::Receiver<std::result::Result<(String, Vec<std::net::TcpStream>), String>>,
+    >,
+    peer_streams: Vec<std::net::TcpStream>,
 }
 
 impl App {
@@ -110,9 +115,12 @@ impl App {
             vm_status: String::new(),
             join_ip: String::new(),
             join_password: String::new(),
+            psk: String::new(),
             join_field: 0,
+            scroll: 0,
             join_status: String::new(),
             join_result: None,
+            peer_streams: Vec::new(),
         }
     }
 
@@ -264,7 +272,7 @@ impl App {
             .direction(Direction::Vertical)
             .constraints(vec![
                 Constraint::Min((0)),
-                Constraint::Length((3)),
+                Constraint::Length((4)),
                 Constraint::Min((0)),
             ])
             .split(layout[1]);
@@ -290,6 +298,8 @@ impl App {
                     + time_string.as_str()
                     + " | Connection code: "
                     + self.join_code.as_str()
+                    + "\nPre-shared key: "
+                    + self.psk.as_str()
                     + "\n"
                     + self.vm_status.as_str(),
             )
@@ -308,13 +318,14 @@ impl App {
                 Constraint::Length((3)),
                 Constraint::Length((3)),
                 Constraint::Length((3)),
+                Constraint::Length((3)),
                 Constraint::Min((0)),
             ])
             .split(area);
 
         frame.render_widget(
             Paragraph::new(
-                String::from("Join a chat. Write the server ip and the password\nUsername: ")
+                String::from("Join a chat. Write the server ip, the password and the pre-shared key\nUsername: ")
                     + self.user.name.as_str(),
             )
             .block(Block::new().borders(Borders::ALL)),
@@ -343,12 +354,28 @@ impl App {
             layout[2],
         );
 
+        let psk_block = Paragraph::new(self.psk.as_str())
+            .block(Block::new().borders(Borders::ALL).title(" Pre-shared key "));
+        frame.render_widget(
+            if self.join_field == 2 {
+                psk_block.block(
+                    Block::new()
+                        .borders(Borders::ALL)
+                        .title(" Pre-shared key ")
+                        .red(),
+                )
+            } else {
+                psk_block
+            },
+            layout[3],
+        );
+
         frame.render_widget(
             Paragraph::new(
                 String::from(self.join_status.as_str())
                     + "\nTab: switch field | Enter: join | Esc: back",
             ),
-            layout[3],
+            layout[4],
         );
 
         if self.join_field == 0 {
@@ -356,54 +383,84 @@ impl App {
                 layout[1].x + 1 + self.join_ip.chars().count() as u16,
                 layout[1].y + 1,
             ));
-        } else {
+        } else if self.join_field == 1 {
             frame.set_cursor_position((
                 layout[2].x + 1 + self.join_password.chars().count() as u16,
                 layout[2].y + 1,
             ));
+        } else {
+            frame.set_cursor_position((
+                layout[3].x + 1 + self.psk.chars().count() as u16,
+                layout[3].y + 1,
+            ));
         }
+    }
+
+    fn wrap_text(text: &str, width: usize) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut count = 0;
+        for character in text.chars() {
+            if count == width {
+                lines.push(current);
+                current = String::new();
+                count = 0;
+            }
+            current.push(character);
+            count = count + 1;
+        }
+        lines.push(current);
+        lines
     }
 
     pub fn render_messaging(&self, frame: &mut Frame) {
         let area = self.render_border(frame);
 
-        /*
-         * split the area in messages, input
-         */
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints(vec![Constraint::Min((0)), Constraint::Length((3))])
             .split(area);
 
-        /*
-         * show only the last messages that fit in the block
-         */
+        let width = layout[0].width.saturating_sub(2) as usize;
         let visible = layout[0].height.saturating_sub(2) as usize;
-        let skip = self.messages.len().saturating_sub(visible);
 
-        let mut messages_string = String::new();
-        for message in self.messages.iter().skip(skip) {
-            messages_string.push_str(message.sender.name.as_str());
-            messages_string.push_str(": ");
-            messages_string.push_str(message.content.as_str());
-            messages_string.push('\n');
+        let end = self.messages.len().saturating_sub(self.scroll);
+
+        let mut lines: Vec<ratatui::text::Line> = Vec::new();
+        for message in self.messages[..end].iter() {
+            let text = message.sender.name.clone() + ": " + message.content.as_str();
+            let parts = App::wrap_text(text.as_str(), width);
+            for part in parts {
+                if message.sender.name == self.user.name {
+                    lines.push(ratatui::text::Line::from(part).right_aligned().green());
+                } else {
+                    lines.push(ratatui::text::Line::from(part));
+                }
+            }
+        }
+
+        let start = lines.len().saturating_sub(visible);
+        let shown: Vec<ratatui::text::Line> = lines[start..].to_vec();
+
+        let mut title = String::from(" Messages ");
+        if self.scroll > 0 {
+            title = String::from(" Messages (scrolled up, Down goes back) ");
         }
 
         frame.render_widget(
-            Paragraph::new(messages_string)
-                .block(Block::new().borders(Borders::ALL).title(" Messages ")),
+            Paragraph::new(shown).block(Block::new().borders(Borders::ALL).title(title)),
             layout[0],
         );
 
         frame.render_widget(
-            Paragraph::new(self.input.as_str())
-                .block(Block::new().borders(Borders::ALL).title(" Write message ")),
+            Paragraph::new(self.input.as_str()).block(
+                Block::new()
+                    .borders(Borders::ALL)
+                    .title(" Write message | Enter: send | Up/Down: scroll | Esc: back "),
+            ),
             layout[1],
         );
 
-        /*
-         * put the cursor at the end of the text in the input block
-         */
         frame.set_cursor_position((
             layout[1].x + 1 + self.input.chars().count() as u16,
             layout[1].y + 1,
@@ -474,6 +531,7 @@ impl App {
     }
     pub fn run_waiting(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         self.join_code = rand::distr::Alphabetic.sample_string(&mut rand::rng(), 5);
+        self.psk = rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 26);
         self.waiting_since = Some(Instant::now());
         //draw once before connecting, because create_server blocks until it ends
         self.vm_status = String::from("Starting the server on the VM...");
@@ -530,6 +588,7 @@ impl App {
             match key_code {
                 KeyCode::Esc => {
                     self.join_result = None;
+                    self.peer_streams.clear();
                     self.screen = ScreenStates::Main;
                     return Ok(());
                 }
@@ -562,7 +621,10 @@ impl App {
             Some(result) => {
                 self.join_result = None;
                 match result {
-                    Ok(message) => Some(message),
+                    Ok((message, streams)) => {
+                        self.peer_streams = streams;
+                        Some(message)
+                    }
                     Err(message) => Some(message),
                 }
             }
@@ -599,18 +661,21 @@ impl App {
             match key_code {
                 KeyCode::Esc => {
                     self.join_result = None;
+                    self.peer_streams.clear();
                     self.screen = ScreenStates::Main;
                     return Ok(());
                 }
                 KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
-                    self.join_field = (self.join_field + 1) % 2;
+                    self.join_field = (self.join_field + 1) % 3;
                 }
                 KeyCode::Char(character) => {
                     if !joining {
                         if self.join_field == 0 {
                             self.join_ip.push(character);
-                        } else {
+                        } else if self.join_field == 1 {
                             self.join_password.push(character);
+                        } else {
+                            self.psk.push(character);
                         }
                     }
                 }
@@ -618,15 +683,21 @@ impl App {
                     if !joining {
                         if self.join_field == 0 {
                             self.join_ip.pop();
-                        } else {
+                        } else if self.join_field == 1 {
                             self.join_password.pop();
+                        } else {
+                            self.psk.pop();
                         }
                     }
                 }
                 KeyCode::Enter => {
                     if !joining {
-                        if self.join_ip.is_empty() || self.join_password.is_empty() {
-                            self.join_status = String::from("Fill the ip and the password");
+                        if self.join_ip.is_empty()
+                            || self.join_password.is_empty()
+                            || self.psk.is_empty()
+                        {
+                            self.join_status =
+                                String::from("Fill the ip, the password and the pre-shared key");
                         } else {
                             let (sender, receiver) = std::sync::mpsc::channel();
                             let ip = self.join_ip.clone();
@@ -669,6 +740,16 @@ impl App {
                 KeyCode::Backspace => {
                     self.input.pop();
                 }
+                KeyCode::Up => {
+                    if self.scroll + 1 < self.messages.len() {
+                        self.scroll = self.scroll + 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if self.scroll > 0 {
+                        self.scroll = self.scroll - 1;
+                    }
+                }
                 KeyCode::Enter => {
                     if !self.input.is_empty() {
                         self.messages.push(Message {
@@ -677,6 +758,7 @@ impl App {
                             content: self.input.clone(),
                         });
                         self.input.clear();
+                        self.scroll = 0;
                     }
                 }
                 _ => {

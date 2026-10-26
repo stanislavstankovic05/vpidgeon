@@ -163,7 +163,7 @@ fn vm_run(vm_session: &ssh2::Session, command: &str) -> std::result::Result<i32,
     }
 }
 
-pub fn lead_join(code: &str) -> std::result::Result<String, String> {
+pub fn lead_join(code: &str) -> std::result::Result<(String, Vec<TcpStream>), String> {
     dotenvy::from_filename(".env");
     let ip = match env::var("VM_IP") {
         Ok(value) => value,
