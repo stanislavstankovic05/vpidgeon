@@ -4,6 +4,7 @@ use std::thread;
 
 use crate::data::User;
 use crate::tui::App;
+mod chat;
 mod client;
 mod cripto;
 pub mod data;

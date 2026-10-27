@@ -163,11 +163,11 @@ fn vm_run(vm_session: &ssh2::Session, command: &str) -> std::result::Result<i32,
     }
 }
 
-pub fn lead_join(code: &str) -> std::result::Result<(String, Vec<TcpStream>), String> {
+pub fn lead_join(code: &str, psk: &str) -> std::result::Result<(String, Vec<crate::data::Peer>), String> {
     dotenvy::from_filename(".env");
     let ip = match env::var("VM_IP") {
         Ok(value) => value,
         Err(err) => return Err(String::from("VM_IP missing in .env")),
     };
-    crate::client::join_server(ip.as_str(), code)
+    crate::client::join_server(ip.as_str(), code, psk)
 }

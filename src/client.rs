@@ -1,8 +1,11 @@
+use crate::cripto::{handshake_lead, handshake_member};
+use crate::data::Peer;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::net::TcpStream;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -12,7 +15,8 @@ pub const LOCAL_PORT: u16 = 9001;
 pub fn join_server(
     ip: &str,
     code: &str,
-) -> std::result::Result<(String, Vec<TcpStream>), String> {
+    psk: &str,
+) -> std::result::Result<(String, Vec<Peer>), String> {
     let server_address: SocketAddr = match format!("{}:{}", ip, SERVER_PORT).parse() {
         Ok(address) => address,
         Err(err) => {
@@ -83,20 +87,27 @@ pub fn join_server(
                 index = index + 1;
                 let server_ip = String::from(ip);
                 let server_code = String::from(code);
-                let handle = std::thread::spawn(move || {
-                    connect_relay(server_ip.as_str(), server_code.as_str(), "LEAD", index)
+                let secret = String::from(psk);
+                let handle = std::thread::spawn(move || -> std::result::Result<Peer, String> {
+                    let mut stream =
+                        connect_relay(server_ip.as_str(), server_code.as_str(), "LEAD", index)?;
+                    let session = handshake_lead(&mut stream, secret.as_str())?;
+                    Ok(Peer {
+                        stream,
+                        session: Arc::new(Mutex::new(session)),
+                    })
                 });
                 handles.push(handle);
             }
         }
 
         let total = handles.len();
-        let mut streams: Vec<TcpStream> = Vec::new();
+        let mut connected: Vec<Peer> = Vec::new();
         let mut errors = String::new();
         for handle in handles {
             match handle.join().unwrap() {
-                Ok(stream) => {
-                    streams.push(stream);
+                Ok(peer) => {
+                    connected.push(peer);
                 }
                 Err(message) => {
                     errors = errors + message.as_str() + ". ";
@@ -104,12 +115,12 @@ pub fn join_server(
             }
         }
         let message = String::from("Connected to ")
-            + streams.len().to_string().as_str()
+            + connected.len().to_string().as_str()
             + " of "
             + total.to_string().as_str()
             + " members. "
             + errors.as_str();
-        return Ok((message, streams));
+        return Ok((message, connected));
     }
 
     let mut index = 0;
@@ -126,10 +137,13 @@ pub fn join_server(
         return Err(String::from("Your address is not in the list from the server"));
     }
 
-    match connect_relay(ip, code, "MEMBER", my_index) {
-        Ok(stream) => Ok((String::from("Connected to the lead"), vec![stream])),
-        Err(message) => Err(message),
-    }
+    let mut stream = connect_relay(ip, code, "MEMBER", my_index)?;
+    let session = handshake_member(&mut stream, psk)?;
+    let peer = Peer {
+        stream,
+        session: Arc::new(Mutex::new(session)),
+    };
+    Ok((String::from("Connected to the lead"), vec![peer]))
 }
 
 /*
