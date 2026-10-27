@@ -2,9 +2,33 @@
 
 A terminal messaging app (TUI) written in Rust, where people chat directly with each other, peer-to-peer.
 
+## Run
+
+You need [Rust](https://rustup.rs). Then:
+
+```bash
+git clone https://github.com/stanislavstankovic05/vpidgeon.git
+cd vpidgeon
+cargo run
+```
+
+Use the arrow keys and Enter in the menu. Esc goes back, and Tab switches between fields.
+
+**Start a chat:** choose Direct chat (2 people) or Group chat.
+- Without a VM: the app shows an address. Send it to the others.
+- With a VM (see Settings): the app starts the server on the VM and shows a code. Send the others the VM ip and the code.
+- Either way, the app also shows a pre-shared key. Give it to the others in person, never through the VM.
+
+**Join a chat:** choose Join.
+- Without a VM: write the lead's `ip:port` and the pre-shared key. The password is not needed.
+- With a VM: write the VM ip, the code and the pre-shared key.
+- Press Enter to join.
+
+Without a VM it works on the same network. Over the internet, the lead has to forward port 9001 on the router, or use a VM.
+
 ## Settings
 
-The VM is optional. Without the `.env` settings below, the lead runs in direct mode: the app listens on port 9001 and shows the address (`ip:9001`). On the same network that is enough. Over the internet, forward port 9001 on the router to the lead's computer. Skip steps 1 to 6 if you don't use a VM.
+The VM is optional. Without the `.env` settings below, the lead runs in direct mode: the app listens on port 9001 and shows the address (`ip:9001`). Skip steps 1 to 6 if you don't use a VM.
 
 1. Create a VM on Google Cloud: `e2-micro`, region `us-central1`, `us-west1` or `us-east1`, Standard provisioning, Standard disk. Debian already has `python3`.
 
@@ -40,22 +64,5 @@ The VM is optional. Without the `.env` settings below, the lead runs in direct m
    VPIDGEON_TIMEOUT=120
    VPIDGEON_MAX=CHANGE_MAX
    ```
-
-## Run
-
-From this folder:
-
-```bash
-cargo run
-```
-
-- Lead peer: choose Direct chat or Group chat.
-  - With a VM: the app starts the server on the VM and shows the code. Share the VM ip and the code with the others.
-  - Without a VM: the app shows an address. Share it with the others.
-  - Either way, the app also shows a pre-shared key. Give it to the others in person, never through the VM.
-- Joiner: choose Join.
-  - With a VM: write the VM ip, the code and the pre-shared key.
-  - Without a VM: write the lead's `ip:port` and the pre-shared key. The password is not needed.
-- Press Enter to join.
 
 With a VM, the addresses are saved in `peers.txt`.
