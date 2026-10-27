@@ -3,6 +3,8 @@ use std::net::Ipv4Addr;
 use std::net::*;
 use std::string::*;
 use whoami::*;
+use crate::cripto::Session;
+use std::sync::{Arc, Mutex};
 #[derive(Clone)]
 pub struct User {
     pub private_ip: Ipv4Addr,
@@ -45,3 +47,9 @@ struct Connection {
 //     fn get_private_ip(),
 //     fn create_handshake(),
 // }
+
+pub struct Peer {
+    pub address: String,
+    pub stream: TcpStream,
+    pub session: Arc<Mutex<Session>>,
+}

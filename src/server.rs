@@ -163,11 +163,89 @@ fn vm_run(vm_session: &ssh2::Session, command: &str) -> std::result::Result<i32,
     }
 }
 
-pub fn lead_join(code: &str) -> std::result::Result<String, String> {
+pub fn lead_join(
+    code: &str,
+    psk: &str,
+) -> std::result::Result<(String, Vec<crate::data::Peer>), String> {
     dotenvy::from_filename(".env");
     let ip = match env::var("VM_IP") {
         Ok(value) => value,
         Err(err) => return Err(String::from("VM_IP missing in .env")),
     };
-    crate::client::join_server(ip.as_str(), code)
+    crate::client::join_server(ip.as_str(), code, psk)
+}
+
+pub fn vm_configured() -> bool {
+    dotenvy::from_filename(".env");
+    let has_ip = env::var("VM_IP").is_ok();
+    let has_name = env::var("VM_NAME").is_ok();
+    let has_key = env::var("SSH_key").is_ok();
+    has_ip && has_name && has_key
+}
+
+pub fn lead_direct(
+    port: u16,
+    psk: &str,
+    max_members: usize,
+    seconds: u64,
+) -> std::result::Result<(String, Vec<crate::data::Peer>), String> {
+    let listener = match std::net::TcpListener::bind(("0.0.0.0", port)) {
+        Ok(listener) => listener,
+        Err(err) => {
+            return Err(String::from("Couldnt listen on the port: ") + err.to_string().as_str());
+        }
+    };
+    listener.set_nonblocking(true).unwrap();
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut peers: Vec<crate::data::Peer> = Vec::new();
+    let mut pending = 0;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+
+    while std::time::Instant::now() < deadline && peers.len() < max_members {
+        if peers.len() + pending < max_members {
+            match listener.accept() {
+                Ok((stream, address)) => {
+                    pending = pending + 1;
+                    let sender = sender.clone();
+                    let psk = String::from(psk);
+                    std::thread::spawn(move || {
+                        let mut stream = stream;
+                        stream.set_nonblocking(false).unwrap();
+                        let result = match crate::cripto::handshake_lead(&mut stream, psk.as_str()) {
+                            Ok(session) => Ok(crate::data::Peer {
+                                address: address.to_string(),
+                                stream: stream,
+                                session: std::sync::Arc::new(std::sync::Mutex::new(session)),
+                            }),
+                            Err(message) => Err(message),
+                        };
+                        let _ = sender.send(result);
+                    });
+                }
+                Err(_) => {}
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        loop {
+            match receiver.try_recv() {
+                Ok(Ok(peer)) => {
+                    peers.push(peer);
+                    pending = pending - 1;
+                }
+                Ok(Err(_)) => {
+                    pending = pending - 1;
+                }
+                Err(_) => {
+                    break;
+                }
+            }
+        }
+    }
+
+    let message = String::from("Secure connection with ")
+        + peers.len().to_string().as_str()
+        + " members";
+    Ok((message, peers))
 }

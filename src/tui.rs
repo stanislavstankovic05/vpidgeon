@@ -1,8 +1,8 @@
 use crate::{
-    data::{Message, User},
-    client::join_server,
-    server::create_server,
-    server::lead_join,
+    chat::{Incoming, close_all, pack, send_to_all, start_readers, unpack},
+    data::{Message, Peer, User},
+    client::{LOCAL_PORT, join_direct, join_server},
+    server::{create_server, lead_direct, lead_join, vm_configured},
     tui::ScreenStates::Main,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -80,9 +80,15 @@ pub struct App {
     vm_status: String,
     join_ip: String,
     join_password: String,
+    psk: String,
     join_field: i32,
+    scroll: usize,
     join_status: String,
-    join_result: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
+    join_result: Option<std::sync::mpsc::Receiver<std::result::Result<(String, Vec<Peer>), String>>>,
+    peers: Vec<Peer>,
+    incoming: Option<std::sync::mpsc::Receiver<Incoming>>,
+    is_lead: bool,
+    direct_address: String,
 }
 
 impl App {
@@ -110,9 +116,15 @@ impl App {
             vm_status: String::new(),
             join_ip: String::new(),
             join_password: String::new(),
+            psk: String::new(),
             join_field: 0,
+            scroll: 0,
             join_status: String::new(),
             join_result: None,
+            peers: Vec::new(),
+            incoming: None,
+            is_lead: false,
+            direct_address: String::new(),
         }
     }
 
@@ -233,7 +245,13 @@ impl App {
                 );
             }
         };
-        let vm_env = template.replace("CHANGE_ME", self.join_code.as_str());
+        let mut max_peers = "20";
+        if self.chat_option == 0 {
+            max_peers = "2";
+        }
+        let vm_env = template
+            .replace("CHANGE_ME", self.join_code.as_str())
+            .replace("CHANGE_MAX", max_peers);
         match std::fs::create_dir_all("vm") {
             Ok(_) => {}
             Err(err) => {
@@ -264,7 +282,7 @@ impl App {
             .direction(Direction::Vertical)
             .constraints(vec![
                 Constraint::Min((0)),
-                Constraint::Length((3)),
+                Constraint::Length((4)),
                 Constraint::Min((0)),
             ])
             .split(layout[1]);
@@ -284,12 +302,19 @@ impl App {
         };
         let time_string = format!("{:02}:{:02}", seconds / 60, seconds % 60);
 
+        let mut share = String::from("Connection code: ") + self.join_code.as_str();
+        if !self.direct_address.is_empty() {
+            share = String::from("Address: ") + self.direct_address.as_str();
+        }
+
         frame.render_widget(
             Paragraph::new(
                 String::from("Waiting to create conection....\n")
                     + time_string.as_str()
-                    + " | Connection code: "
-                    + self.join_code.as_str()
+                    + " | "
+                    + share.as_str()
+                    + "\nPre-shared key: "
+                    + self.psk.as_str()
                     + "\n"
                     + self.vm_status.as_str(),
             )
@@ -308,13 +333,14 @@ impl App {
                 Constraint::Length((3)),
                 Constraint::Length((3)),
                 Constraint::Length((3)),
+                Constraint::Length((3)),
                 Constraint::Min((0)),
             ])
             .split(area);
 
         frame.render_widget(
             Paragraph::new(
-                String::from("Join a chat. Write the server ip and the password\nUsername: ")
+                String::from("Join a chat. Write the server ip (or the lead ip:port), the password and the pre-shared key\nUsername: ")
                     + self.user.name.as_str(),
             )
             .block(Block::new().borders(Borders::ALL)),
@@ -333,14 +359,30 @@ impl App {
         );
 
         let password_block = Paragraph::new(self.join_password.as_str())
-            .block(Block::new().borders(Borders::ALL).title(" Password "));
+            .block(Block::new().borders(Borders::ALL).title(" Password (not needed with ip:port) "));
         frame.render_widget(
             if self.join_field == 1 {
-                password_block.block(Block::new().borders(Borders::ALL).title(" Password ").red())
+                password_block.block(Block::new().borders(Borders::ALL).title(" Password (not needed with ip:port) ").red())
             } else {
                 password_block
             },
             layout[2],
+        );
+
+        let psk_block = Paragraph::new(self.psk.as_str())
+            .block(Block::new().borders(Borders::ALL).title(" Pre-shared key "));
+        frame.render_widget(
+            if self.join_field == 2 {
+                psk_block.block(
+                    Block::new()
+                        .borders(Borders::ALL)
+                        .title(" Pre-shared key ")
+                        .red(),
+                )
+            } else {
+                psk_block
+            },
+            layout[3],
         );
 
         frame.render_widget(
@@ -348,7 +390,7 @@ impl App {
                 String::from(self.join_status.as_str())
                     + "\nTab: switch field | Enter: join | Esc: back",
             ),
-            layout[3],
+            layout[4],
         );
 
         if self.join_field == 0 {
@@ -356,54 +398,84 @@ impl App {
                 layout[1].x + 1 + self.join_ip.chars().count() as u16,
                 layout[1].y + 1,
             ));
-        } else {
+        } else if self.join_field == 1 {
             frame.set_cursor_position((
                 layout[2].x + 1 + self.join_password.chars().count() as u16,
                 layout[2].y + 1,
             ));
+        } else {
+            frame.set_cursor_position((
+                layout[3].x + 1 + self.psk.chars().count() as u16,
+                layout[3].y + 1,
+            ));
         }
+    }
+
+    fn wrap_text(text: &str, width: usize) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut count = 0;
+        for character in text.chars() {
+            if count == width {
+                lines.push(current);
+                current = String::new();
+                count = 0;
+            }
+            current.push(character);
+            count = count + 1;
+        }
+        lines.push(current);
+        lines
     }
 
     pub fn render_messaging(&self, frame: &mut Frame) {
         let area = self.render_border(frame);
 
-        /*
-         * split the area in messages, input
-         */
         let layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints(vec![Constraint::Min((0)), Constraint::Length((3))])
             .split(area);
 
-        /*
-         * show only the last messages that fit in the block
-         */
+        let width = layout[0].width.saturating_sub(2) as usize;
         let visible = layout[0].height.saturating_sub(2) as usize;
-        let skip = self.messages.len().saturating_sub(visible);
 
-        let mut messages_string = String::new();
-        for message in self.messages.iter().skip(skip) {
-            messages_string.push_str(message.sender.name.as_str());
-            messages_string.push_str(": ");
-            messages_string.push_str(message.content.as_str());
-            messages_string.push('\n');
+        let end = self.messages.len().saturating_sub(self.scroll);
+
+        let mut lines: Vec<ratatui::text::Line> = Vec::new();
+        for message in self.messages[..end].iter() {
+            let text = message.sender.name.clone() + ": " + message.content.as_str();
+            let parts = App::wrap_text(text.as_str(), width);
+            for part in parts {
+                if message.sender.name == self.user.name {
+                    lines.push(ratatui::text::Line::from(part).right_aligned().green());
+                } else {
+                    lines.push(ratatui::text::Line::from(part));
+                }
+            }
+        }
+
+        let start = lines.len().saturating_sub(visible);
+        let shown: Vec<ratatui::text::Line> = lines[start..].to_vec();
+
+        let mut title = String::from(" Messages ");
+        if self.scroll > 0 {
+            title = String::from(" Messages (scrolled up, Down goes back) ");
         }
 
         frame.render_widget(
-            Paragraph::new(messages_string)
-                .block(Block::new().borders(Borders::ALL).title(" Messages ")),
+            Paragraph::new(shown).block(Block::new().borders(Borders::ALL).title(title)),
             layout[0],
         );
 
         frame.render_widget(
-            Paragraph::new(self.input.as_str())
-                .block(Block::new().borders(Borders::ALL).title(" Write message ")),
+            Paragraph::new(self.input.as_str()).block(
+                Block::new()
+                    .borders(Borders::ALL)
+                    .title(" Write message | Enter: send | Up/Down: scroll | Esc: back "),
+            ),
             layout[1],
         );
 
-        /*
-         * put the cursor at the end of the text in the input block
-         */
         frame.set_cursor_position((
             layout[1].x + 1 + self.input.chars().count() as u16,
             layout[1].y + 1,
@@ -474,13 +546,34 @@ impl App {
     }
     pub fn run_waiting(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         self.join_code = rand::distr::Alphabetic.sample_string(&mut rand::rng(), 5);
+        self.psk = rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 26);
         self.waiting_since = Some(Instant::now());
+        self.is_lead = true;
+        self.direct_address = String::new();
         //draw once before connecting, because create_server blocks until it ends
         self.vm_status = String::from("Starting the server on the VM...");
         terminal.draw(|frame| self.render_wainting(frame))?;
         //option 2 is Join, the joiner has no vm to start
         if self.chat_option == 2 {
             self.vm_status = String::new();
+        } else if !vm_configured() {
+            let mut max_members = 19;
+            if self.chat_option == 0 {
+                max_members = 1;
+            }
+            let my_ip = match local_ip_address::local_ip() {
+                Ok(ip) => ip.to_string(),
+                Err(_) => String::from("your-ip"),
+            };
+            self.direct_address = my_ip + ":" + LOCAL_PORT.to_string().as_str();
+            self.vm_status = String::from("No VM set, direct mode. Share the address and the key");
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let psk = self.psk.clone();
+            std::thread::spawn(move || {
+                let result = lead_direct(LOCAL_PORT, psk.as_str(), max_members, 120);
+                let _ = sender.send(result);
+            });
+            self.join_result = Some(receiver);
         } else {
             let started = match self.write_vm_env() {
                 Ok(_) => create_server(),
@@ -491,8 +584,9 @@ impl App {
                     self.vm_status = message + ", waiting for the other peers...";
                     let (sender, receiver) = std::sync::mpsc::channel();
                     let code = self.join_code.clone();
+                    let psk = self.psk.clone();
                     std::thread::spawn(move || {
-                        let result = lead_join(code.as_str());
+                        let result = lead_join(code.as_str(), psk.as_str());
                         let _ = sender.send(result);
                     });
                     self.join_result = Some(receiver);
@@ -509,6 +603,11 @@ impl App {
                     self.vm_status = message;
                 }
                 None => {}
+            }
+            if !self.peers.is_empty() {
+                self.start_chat();
+                self.screen = ScreenStates::Messaging;
+                return Ok(());
             }
             let key_code: KeyCode;
             //wait at most half a second for a key, so the timer keeps moving
@@ -530,12 +629,8 @@ impl App {
             match key_code {
                 KeyCode::Esc => {
                     self.join_result = None;
+                    close_all(&mut self.peers);
                     self.screen = ScreenStates::Main;
-                    return Ok(());
-                }
-                //no connection yet, Enter opens the messaging page to test it
-                KeyCode::Enter => {
-                    self.screen = ScreenStates::Messaging;
                     return Ok(());
                 }
                 _ => {
@@ -562,7 +657,10 @@ impl App {
             Some(result) => {
                 self.join_result = None;
                 match result {
-                    Ok(message) => Some(message),
+                    Ok((message, peers)) => {
+                        self.peers = peers;
+                        Some(message)
+                    }
                     Err(message) => Some(message),
                 }
             }
@@ -570,6 +668,7 @@ impl App {
         }
     }
     pub fn run_join(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+        self.is_lead = false;
         loop {
             terminal.draw(|frame| self.render_join(frame))?;
 
@@ -578,6 +677,11 @@ impl App {
                     self.join_status = message;
                 }
                 None => {}
+            }
+            if !self.peers.is_empty() {
+                self.start_chat();
+                self.screen = ScreenStates::Messaging;
+                return Ok(());
             }
 
             let key_code: KeyCode;
@@ -599,18 +703,21 @@ impl App {
             match key_code {
                 KeyCode::Esc => {
                     self.join_result = None;
+                    close_all(&mut self.peers);
                     self.screen = ScreenStates::Main;
                     return Ok(());
                 }
                 KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
-                    self.join_field = (self.join_field + 1) % 2;
+                    self.join_field = (self.join_field + 1) % 3;
                 }
                 KeyCode::Char(character) => {
                     if !joining {
                         if self.join_field == 0 {
                             self.join_ip.push(character);
-                        } else {
+                        } else if self.join_field == 1 {
                             self.join_password.push(character);
+                        } else {
+                            self.psk.push(character);
                         }
                     }
                 }
@@ -618,21 +725,33 @@ impl App {
                     if !joining {
                         if self.join_field == 0 {
                             self.join_ip.pop();
-                        } else {
+                        } else if self.join_field == 1 {
                             self.join_password.pop();
+                        } else {
+                            self.psk.pop();
                         }
                     }
                 }
                 KeyCode::Enter => {
                     if !joining {
-                        if self.join_ip.is_empty() || self.join_password.is_empty() {
-                            self.join_status = String::from("Fill the ip and the password");
+                        let direct = self.join_ip.contains(':');
+                        if self.join_ip.is_empty()
+                            || (!direct && self.join_password.is_empty())
+                            || self.psk.is_empty()
+                        {
+                            self.join_status =
+                                String::from("Fill the ip, the password and the pre-shared key");
                         } else {
                             let (sender, receiver) = std::sync::mpsc::channel();
                             let ip = self.join_ip.clone();
                             let password = self.join_password.clone();
+                            let psk = self.psk.clone();
                             std::thread::spawn(move || {
-                                let result = join_server(ip.as_str(), password.as_str());
+                                let result = if direct {
+                                    join_direct(ip.as_str(), psk.as_str())
+                                } else {
+                                    join_server(ip.as_str(), password.as_str(), psk.as_str())
+                                };
                                 let _ = sender.send(result);
                             });
                             self.join_result = Some(receiver);
@@ -645,21 +764,85 @@ impl App {
             }
         }
     }
+    fn start_chat(&mut self) {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        start_readers(&self.peers, &sender);
+        self.incoming = Some(receiver);
+        self.messages.clear();
+        self.scroll = 0;
+    }
+
+    fn leave_chat(&mut self) {
+        close_all(&mut self.peers);
+        self.incoming = None;
+    }
+
+    fn add_message(&mut self, name: &str, content: &str) {
+        let mut sender = User::default();
+        sender.name = String::from(name);
+        self.messages.push(Message {
+            sender: sender,
+            reply_to: None,
+            content: String::from(content),
+        });
+    }
+
+    fn handle_incoming(&mut self, index: usize, result: std::result::Result<String, String>) {
+        match result {
+            Ok(text) => {
+                let (name, content) = unpack(text.as_str());
+                self.add_message(name.as_str(), content.as_str());
+                if self.is_lead {
+                    send_to_all(&mut self.peers, Some(index), text.as_str());
+                }
+            }
+            Err(message) => {
+                let notice = String::from("a peer left: ") + message.as_str();
+                self.add_message("system", notice.as_str());
+            }
+        }
+    }
+
     pub fn run_messaging(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         loop {
             terminal.draw(|frame| self.render_messaging(frame))?;
+
+            let mut received: Vec<Incoming> = Vec::new();
+            match &self.incoming {
+                Some(receiver) => loop {
+                    match receiver.try_recv() {
+                        Ok(item) => {
+                            received.push(item);
+                        }
+                        Err(_) => {
+                            break;
+                        }
+                    }
+                },
+                None => {}
+            }
+            for item in received {
+                self.handle_incoming(item.0, item.1);
+            }
+
             let key_code: KeyCode;
-            let key_event = event::read().unwrap().as_key_press_event();
-            match key_event {
-                Some(key_event) => {
-                    key_code = key_event.code;
+            //wait a short time for a key, so the incoming messages are shown quickly
+            if event::poll(Duration::from_millis(100))? {
+                let key_event = event::read().unwrap().as_key_press_event();
+                match key_event {
+                    Some(key_event) => {
+                        key_code = key_event.code;
+                    }
+                    _ => {
+                        key_code = KeyCode::Null;
+                    }
                 }
-                _ => {
-                    key_code = KeyCode::Null;
-                }
+            } else {
+                key_code = KeyCode::Null;
             }
             match key_code {
                 KeyCode::Esc => {
+                    self.leave_chat();
                     self.screen = ScreenStates::Main;
                     return Ok(());
                 }
@@ -669,19 +852,28 @@ impl App {
                 KeyCode::Backspace => {
                     self.input.pop();
                 }
-                KeyCode::Enter => {
-                    if !self.input.is_empty() {
-                        self.messages.push(Message {
-                            sender: self.user.clone(),
-                            reply_to: None,
-                            content: self.input.clone(),
-                        });
-                        self.input.clear();
+                KeyCode::Up => {
+                    if self.scroll + 1 < self.messages.len() {
+                        self.scroll = self.scroll + 1;
                     }
                 }
-                _ => {
-                    print!("");
+                KeyCode::Down => {
+                    if self.scroll > 0 {
+                        self.scroll = self.scroll - 1;
+                    }
                 }
+                KeyCode::Enter => {
+                    if !self.input.is_empty() {
+                        let text = pack(self.user.name.as_str(), self.input.as_str());
+                        send_to_all(&mut self.peers, None, text.as_str());
+                        let name = self.user.name.clone();
+                        let content = self.input.clone();
+                        self.add_message(name.as_str(), content.as_str());
+                        self.input.clear();
+                        self.scroll = 0;
+                    }
+                }
+                _ => {}
             }
         }
     }

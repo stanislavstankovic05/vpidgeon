@@ -14,6 +14,7 @@ env_file.close()
 code = env["VPIDGEON_CODE"].encode()
 listen_port = int(env["VPIDGEON_PORT"])
 timeout = int(env["VPIDGEON_TIMEOUT"])
+max_members = int(env["VPIDGEON_MAX"])
 deadline = time.time() + timeout
 
 listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -24,7 +25,7 @@ listener.listen(16)
 clients = []
 addresses = []
 
-while time.time() < deadline:
+while time.time() < deadline and len(clients) < max_members:
     time_left = deadline - time.time()
     if time_left < 0.1:
         time_left = 0.1
