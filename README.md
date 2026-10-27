@@ -1,4 +1,4 @@
-# vpidgeon
+# vpidgeon - manual handshake version, for learning purposes
 
 A terminal messaging app (TUI) written in Rust, where people chat directly with each other, peer-to-peer.
 
