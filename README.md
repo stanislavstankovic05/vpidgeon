@@ -2,6 +2,8 @@
 
 A terminal messaging app (TUI) written in Rust, where people chat directly with each other, peer-to-peer.
 
+**The lead needs a server (a small VM) to make the ip exchange.** Peers behind a router can't find each other's public address on their own, so the lead's VM gives the addresses to everyone who joins. After that, the peers talk directly and the VM is no longer used. Only the lead needs the VM. The others just need the app.
+
 ## Run
 
 You need [Rust](https://rustup.rs). Then:
@@ -14,21 +16,13 @@ cargo run
 
 Use the arrow keys and Enter in the menu. Esc goes back, and Tab switches between fields.
 
-**Start a chat:** choose Direct chat (2 people) or Group chat.
-- Without a VM: the app shows an address. Send it to the others.
-- With a VM (see Settings): the app starts the server on the VM and shows a code. Send the others the VM ip and the code.
-- Either way, the app also shows a pre-shared key. Give it to the others in person, never through the VM.
+**Start a chat (the lead):** choose Direct chat or Group chat. The app starts the server on your VM (see Settings) and shows a code and a pre-shared key. Send the others the VM ip and the code. Give them the pre-shared key in person, never through the VM.
 
-**Join a chat:** choose Join.
-- Without a VM: write the lead's `ip:port` and the pre-shared key. The password is not needed.
-- With a VM: write the VM ip, the code and the pre-shared key.
-- Press Enter to join.
-
-Without a VM it works on the same network. Over the internet, the lead has to forward port 9001 on the router, or use a VM.
+**Join a chat:** choose Join, write the VM ip, the code and the pre-shared key, and press Enter. Joiners don't need a VM or a `.env`.
 
 ## Settings
 
-The VM is optional. Without the `.env` settings below, the lead runs in direct mode: the app listens on port 9001 and shows the address (`ip:9001`). Skip steps 1 to 6 if you don't use a VM.
+Only the lead needs these settings. The VM is required: it is the server that does the ip exchange.
 
 1. Create a VM on Google Cloud: `e2-micro`, region `us-central1`, `us-west1` or `us-east1`, Standard provisioning, Standard disk. Debian already has `python3`.
 
@@ -65,4 +59,4 @@ The VM is optional. Without the `.env` settings below, the lead runs in direct m
    VPIDGEON_MAX=CHANGE_MAX
    ```
 
-With a VM, the addresses are saved in `peers.txt`.
+The addresses of the peers are saved in `peers.txt`.
