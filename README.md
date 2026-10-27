@@ -1,6 +1,8 @@
 # vpidgeon
 
-A terminal messaging app (TUI) written in Rust, where people chat directly with each other, peer-to-peer.
+A terminal messaging app (TUI) written in Rust, where people chat with each other.
+
+The lead needs a server (a small VM). It makes the ip exchange, and then it relays the connections: the lead connects through the VM to every member, because home routers often block a direct connection between two peers. The VM only passes the bytes along. Only the lead needs the VM. The others just need the app.
 
 ## Settings
 
@@ -30,12 +32,13 @@ A terminal messaging app (TUI) written in Rust, where people chat directly with 
 
    The external ip changes every time the VM is restarted, so update `VM_IP`.
 
-6. The server config is `vm_env.template`. The app fills in the code, so only change the port and the timeout (in seconds):
+6. The server config is `vm_env.template`. The app fills in the code, the timeout and the maximum number of peers (100 seconds and 2 peers for a direct chat, 300 seconds and 20 peers for a group chat), so only change the port. The server stops waiting as soon as the chat is full:
 
    ```
    VPIDGEON_CODE=CHANGE_ME
    VPIDGEON_PORT=9000
-   VPIDGEON_TIMEOUT=120
+   VPIDGEON_TIMEOUT=CHANGE_TIMEOUT
+   VPIDGEON_MAX=CHANGE_MAX
    ```
 
 ## Run

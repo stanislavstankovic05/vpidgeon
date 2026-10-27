@@ -12,7 +12,12 @@ use rand::{
     distr::{Distribution, SampleString},
     *,
 };
-use ratatui::{layout::*, style::Stylize, symbols::block, widgets::Paragraph};
+use ratatui::{
+    layout::*,
+    style::Stylize,
+    symbols::block,
+    widgets::{Paragraph, Wrap},
+};
 use ratatui::{
     widgets::{Block, Borders},
     *,
@@ -241,7 +246,17 @@ impl App {
                 );
             }
         };
-        let vm_env = template.replace("CHANGE_ME", self.join_code.as_str());
+        //option 0 is the direct chat, option 1 is the group chat
+        let mut seconds = "300";
+        let mut max_members = "20";
+        if self.chat_option == 0 {
+            seconds = "100";
+            max_members = "2";
+        }
+        let vm_env = template
+            .replace("CHANGE_ME", self.join_code.as_str())
+            .replace("CHANGE_TIMEOUT", seconds)
+            .replace("CHANGE_MAX", max_members);
         match std::fs::create_dir_all("vm") {
             Ok(_) => {}
             Err(err) => {
@@ -303,7 +318,8 @@ impl App {
                     + "\n"
                     + self.vm_status.as_str(),
             )
-            .alignment(Alignment::Center),
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
             layout_body[1],
         );
     }
@@ -374,7 +390,8 @@ impl App {
             Paragraph::new(
                 String::from(self.join_status.as_str())
                     + "\nTab: switch field | Enter: join | Esc: back",
-            ),
+            )
+            .wrap(Wrap { trim: true }),
             layout[4],
         );
 
