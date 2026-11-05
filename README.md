@@ -1,28 +1,10 @@
 # vpidgeon
 
-A terminal messaging app (TUI) written in Rust, where people chat directly with each other, peer-to-peer.
+A terminal messaging app (TUI) written in Rust, where people chat with each other.
 
-**The lead needs a server (a small VM) to make the ip exchange.** Peers behind a router can't find each other's public address on their own, so the lead's VM gives the addresses to everyone who joins. After that, the peers talk directly and the VM is no longer used. Only the lead needs the VM. The others just need the app.
-
-## Run
-
-You need [Rust](https://rustup.rs). Then:
-
-```bash
-git clone https://github.com/stanislavstankovic05/vpidgeon.git
-cd vpidgeon
-cargo run
-```
-
-Use the arrow keys and Enter in the menu. Esc goes back, and Tab switches between fields.
-
-**Start a chat (the lead):** choose Direct chat or Group chat. The app starts the server on your VM (see Settings) and shows a code and a pre-shared key. Send the others the VM ip and the code. Give them the pre-shared key in person, never through the VM.
-
-**Join a chat:** choose Join, write the VM ip, the code and the pre-shared key, and press Enter. Joiners don't need a VM or a `.env`.
+The lead needs a server (a small VM). It makes the ip exchange, and then it relays the connections: the lead connects through the VM to every member, because home routers often block a direct connection between two peers. The VM only passes the bytes along. Only the lead needs the VM. The others just need the app.
 
 ## Settings
-
-Only the lead needs these settings. The VM is required: it is the server that does the ip exchange.
 
 1. Create a VM on Google Cloud: `e2-micro`, region `us-central1`, `us-west1` or `us-east1`, Standard provisioning, Standard disk. Debian already has `python3`.
 
@@ -50,13 +32,34 @@ Only the lead needs these settings. The VM is required: it is the server that do
 
    The external ip changes every time the VM is restarted, so update `VM_IP`.
 
-6. The server config is `vm_env.template`. The app fills in the code and the maximum number of peers (2 for a direct chat, 20 for a group), so only change the port and the timeout (in seconds):
+6. The server config is `vm_env.template`. The app fills in the code, the timeout and the maximum number of peers (100 seconds and 2 peers for a direct chat, 100 seconds and 20 peers for a group chat), so only change the port. The server stops waiting as soon as the chat is full:
 
    ```
    VPIDGEON_CODE=CHANGE_ME
    VPIDGEON_PORT=9000
-   VPIDGEON_TIMEOUT=120
+   VPIDGEON_TIMEOUT=CHANGE_TIMEOUT
    VPIDGEON_MAX=CHANGE_MAX
    ```
 
-The addresses of the peers are saved in `peers.txt`.
+## Run
+
+You need [Rust](https://rustup.rs). On Windows it also asks for the Visual Studio Build Tools ("Desktop development with C++"). Then:
+
+```bash
+git clone https://github.com/stanislavstankovic05/vpidgeon.git
+cd vpidgeon
+cargo run
+```
+
+Use the arrow keys and Enter in the menu. Esc goes back, and Tab switches between fields.
+
+- **Lead peer:** choose Direct chat or Group chat. The app starts the server on the VM and shows a code and a pre-shared key. Send the others the VM ip and the code. Give them the pre-shared key in person, never through the VM.
+- **Joiner:** choose Join, write the VM ip, the code and the pre-shared key, and press Enter. Joiners don't need a VM or a `.env`.
+
+Both of you have to join within 100 seconds of the lead opening the waiting screen. A direct chat starts as soon as the second person joins.
+
+The messages are encrypted end to end with [snow](https://github.com/mcginty/snow) (Noise protocol). The VM only passes the encrypted bytes between the peers. The addresses are saved in `peers.txt`.
+
+## License
+
+MIT, see `LICENSE`. The licenses of the crates it uses are in `THIRD_PARTY_LICENSES.md`.

@@ -1,8 +1,9 @@
 use crate::{
-    chat::{Incoming, close_all, pack, send_to_all, start_readers, unpack},
+    chat::{close_all, send_to_all, start_readers, Incoming, MAX_MESSAGE},
     data::{Message, Peer, User},
-    client::{LOCAL_PORT, join_direct, join_server},
-    server::{create_server, lead_direct, lead_join, vm_configured},
+    client::join_server,
+    server::create_server,
+    server::lead_join,
     tui::ScreenStates::Main,
 };
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -12,7 +13,12 @@ use rand::{
     distr::{Distribution, SampleString},
     *,
 };
-use ratatui::{layout::*, style::Stylize, symbols::block, widgets::Paragraph};
+use ratatui::{
+    layout::*,
+    style::Stylize,
+    symbols::block,
+    widgets::{Paragraph, Wrap},
+};
 use ratatui::{
     widgets::{Block, Borders},
     *,
@@ -84,11 +90,13 @@ pub struct App {
     join_field: i32,
     scroll: usize,
     join_status: String,
-    join_result: Option<std::sync::mpsc::Receiver<std::result::Result<(String, Vec<Peer>), String>>>,
+    join_result: Option<
+        std::sync::mpsc::Receiver<std::result::Result<(String, Vec<Peer>), String>>,
+    >,
     peers: Vec<Peer>,
-    incoming: Option<std::sync::mpsc::Receiver<Incoming>>,
     is_lead: bool,
-    direct_address: String,
+    chat_peers: Option<std::sync::Arc<Vec<Peer>>>,
+    incoming: Option<std::sync::mpsc::Receiver<Incoming>>,
 }
 
 impl App {
@@ -122,9 +130,9 @@ impl App {
             join_status: String::new(),
             join_result: None,
             peers: Vec::new(),
-            incoming: None,
             is_lead: false,
-            direct_address: String::new(),
+            chat_peers: None,
+            incoming: None,
         }
     }
 
@@ -245,13 +253,17 @@ impl App {
                 );
             }
         };
-        let mut max_peers = "20";
+        //option 0 is the direct chat, option 1 is the group chat
+        let mut seconds = "100";
+        let mut max_members = "20";
         if self.chat_option == 0 {
-            max_peers = "2";
+            seconds = "100";
+            max_members = "2";
         }
         let vm_env = template
             .replace("CHANGE_ME", self.join_code.as_str())
-            .replace("CHANGE_MAX", max_peers);
+            .replace("CHANGE_TIMEOUT", seconds)
+            .replace("CHANGE_MAX", max_members);
         match std::fs::create_dir_all("vm") {
             Ok(_) => {}
             Err(err) => {
@@ -302,23 +314,19 @@ impl App {
         };
         let time_string = format!("{:02}:{:02}", seconds / 60, seconds % 60);
 
-        let mut share = String::from("Connection code: ") + self.join_code.as_str();
-        if !self.direct_address.is_empty() {
-            share = String::from("Address: ") + self.direct_address.as_str();
-        }
-
         frame.render_widget(
             Paragraph::new(
                 String::from("Waiting to create conection....\n")
                     + time_string.as_str()
-                    + " | "
-                    + share.as_str()
+                    + " | Connection code: "
+                    + self.join_code.as_str()
                     + "\nPre-shared key: "
                     + self.psk.as_str()
                     + "\n"
                     + self.vm_status.as_str(),
             )
-            .alignment(Alignment::Center),
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
             layout_body[1],
         );
     }
@@ -340,7 +348,7 @@ impl App {
 
         frame.render_widget(
             Paragraph::new(
-                String::from("Join a chat. Write the server ip (or the lead ip:port), the password and the pre-shared key\nUsername: ")
+                String::from("Join a chat. Write the server ip, the password and the pre-shared key\nUsername: ")
                     + self.user.name.as_str(),
             )
             .block(Block::new().borders(Borders::ALL)),
@@ -359,10 +367,10 @@ impl App {
         );
 
         let password_block = Paragraph::new(self.join_password.as_str())
-            .block(Block::new().borders(Borders::ALL).title(" Password (not needed with ip:port) "));
+            .block(Block::new().borders(Borders::ALL).title(" Password "));
         frame.render_widget(
             if self.join_field == 1 {
-                password_block.block(Block::new().borders(Borders::ALL).title(" Password (not needed with ip:port) ").red())
+                password_block.block(Block::new().borders(Borders::ALL).title(" Password ").red())
             } else {
                 password_block
             },
@@ -389,7 +397,8 @@ impl App {
             Paragraph::new(
                 String::from(self.join_status.as_str())
                     + "\nTab: switch field | Enter: join | Esc: back",
-            ),
+            )
+            .wrap(Wrap { trim: true }),
             layout[4],
         );
 
@@ -548,32 +557,12 @@ impl App {
         self.join_code = rand::distr::Alphabetic.sample_string(&mut rand::rng(), 5);
         self.psk = rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 26);
         self.waiting_since = Some(Instant::now());
-        self.is_lead = true;
-        self.direct_address = String::new();
         //draw once before connecting, because create_server blocks until it ends
         self.vm_status = String::from("Starting the server on the VM...");
         terminal.draw(|frame| self.render_wainting(frame))?;
         //option 2 is Join, the joiner has no vm to start
         if self.chat_option == 2 {
             self.vm_status = String::new();
-        } else if !vm_configured() {
-            let mut max_members = 19;
-            if self.chat_option == 0 {
-                max_members = 1;
-            }
-            let my_ip = match local_ip_address::local_ip() {
-                Ok(ip) => ip.to_string(),
-                Err(_) => String::from("your-ip"),
-            };
-            self.direct_address = my_ip + ":" + LOCAL_PORT.to_string().as_str();
-            self.vm_status = String::from("No VM set, direct mode. Share the address and the key");
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let psk = self.psk.clone();
-            std::thread::spawn(move || {
-                let result = lead_direct(LOCAL_PORT, psk.as_str(), max_members, 120);
-                let _ = sender.send(result);
-            });
-            self.join_result = Some(receiver);
         } else {
             let started = match self.write_vm_env() {
                 Ok(_) => create_server(),
@@ -585,6 +574,7 @@ impl App {
                     let (sender, receiver) = std::sync::mpsc::channel();
                     let code = self.join_code.clone();
                     let psk = self.psk.clone();
+                    self.is_lead = true;
                     std::thread::spawn(move || {
                         let result = lead_join(code.as_str(), psk.as_str());
                         let _ = sender.send(result);
@@ -601,13 +591,13 @@ impl App {
             match self.poll_join() {
                 Some(message) => {
                     self.vm_status = message;
+                    if !self.peers.is_empty() {
+                        self.open_chat();
+                        self.screen = ScreenStates::Messaging;
+                        return Ok(());
+                    }
                 }
                 None => {}
-            }
-            if !self.peers.is_empty() {
-                self.start_chat();
-                self.screen = ScreenStates::Messaging;
-                return Ok(());
             }
             let key_code: KeyCode;
             //wait at most half a second for a key, so the timer keeps moving
@@ -629,8 +619,13 @@ impl App {
             match key_code {
                 KeyCode::Esc => {
                     self.join_result = None;
-                    close_all(&mut self.peers);
+                    self.peers.clear();
                     self.screen = ScreenStates::Main;
+                    return Ok(());
+                }
+                //no connection yet, Enter opens the messaging page to test it
+                KeyCode::Enter => {
+                    self.screen = ScreenStates::Messaging;
                     return Ok(());
                 }
                 _ => {
@@ -668,20 +663,19 @@ impl App {
         }
     }
     pub fn run_join(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
-        self.is_lead = false;
         loop {
             terminal.draw(|frame| self.render_join(frame))?;
 
             match self.poll_join() {
                 Some(message) => {
                     self.join_status = message;
+                    if !self.peers.is_empty() {
+                        self.open_chat();
+                        self.screen = ScreenStates::Messaging;
+                        return Ok(());
+                    }
                 }
                 None => {}
-            }
-            if !self.peers.is_empty() {
-                self.start_chat();
-                self.screen = ScreenStates::Messaging;
-                return Ok(());
             }
 
             let key_code: KeyCode;
@@ -703,7 +697,7 @@ impl App {
             match key_code {
                 KeyCode::Esc => {
                     self.join_result = None;
-                    close_all(&mut self.peers);
+                    self.peers.clear();
                     self.screen = ScreenStates::Main;
                     return Ok(());
                 }
@@ -734,9 +728,8 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if !joining {
-                        let direct = self.join_ip.contains(':');
                         if self.join_ip.is_empty()
-                            || (!direct && self.join_password.is_empty())
+                            || self.join_password.is_empty()
                             || self.psk.is_empty()
                         {
                             self.join_status =
@@ -746,12 +739,9 @@ impl App {
                             let ip = self.join_ip.clone();
                             let password = self.join_password.clone();
                             let psk = self.psk.clone();
+                            self.is_lead = false;
                             std::thread::spawn(move || {
-                                let result = if direct {
-                                    join_direct(ip.as_str(), psk.as_str())
-                                } else {
-                                    join_server(ip.as_str(), password.as_str(), psk.as_str())
-                                };
+                                let result = join_server(ip.as_str(), password.as_str(), psk.as_str());
                                 let _ = sender.send(result);
                             });
                             self.join_result = Some(receiver);
@@ -764,69 +754,60 @@ impl App {
             }
         }
     }
-    fn start_chat(&mut self) {
+    /*
+     * the handshake is done, the peers are kept in an Arc so the reader threads can share them
+     */
+    fn open_chat(&mut self) {
+        let peers = std::sync::Arc::new(std::mem::take(&mut self.peers));
         let (sender, receiver) = std::sync::mpsc::channel();
-        start_readers(&self.peers, &sender);
+        start_readers(&peers, self.is_lead, sender);
+        self.chat_peers = Some(peers);
         self.incoming = Some(receiver);
         self.messages.clear();
         self.scroll = 0;
+        self.input.clear();
     }
 
-    fn leave_chat(&mut self) {
-        close_all(&mut self.peers);
-        self.incoming = None;
-    }
-
-    fn add_message(&mut self, name: &str, content: &str) {
-        let mut sender = User::default();
-        sender.name = String::from(name);
-        self.messages.push(Message {
-            sender: sender,
-            reply_to: None,
-            content: String::from(content),
-        });
-    }
-
-    fn handle_incoming(&mut self, index: usize, result: std::result::Result<String, String>) {
-        match result {
-            Ok(text) => {
-                let (name, content) = unpack(text.as_str());
-                self.add_message(name.as_str(), content.as_str());
-                if self.is_lead {
-                    send_to_all(&mut self.peers, Some(index), text.as_str());
-                }
-            }
-            Err(message) => {
-                let notice = String::from("a peer left: ") + message.as_str();
-                self.add_message("system", notice.as_str());
-            }
+    fn close_chat(&mut self) {
+        match &self.chat_peers {
+            Some(peers) => close_all(peers),
+            None => {}
         }
+        self.chat_peers = None;
+        self.incoming = None;
+        self.messages.clear();
+    }
+
+    fn add_message(&mut self, name: String, content: String) {
+        let mut sender = User::default();
+        sender.name = name;
+        self.messages.push(Message {
+            sender,
+            reply_to: None,
+            content,
+        });
     }
 
     pub fn run_messaging(&mut self, terminal: &mut DefaultTerminal) -> std::io::Result<()> {
         loop {
             terminal.draw(|frame| self.render_messaging(frame))?;
 
+            //messages from the other peers
             let mut received: Vec<Incoming> = Vec::new();
             match &self.incoming {
-                Some(receiver) => loop {
-                    match receiver.try_recv() {
-                        Ok(item) => {
-                            received.push(item);
-                        }
-                        Err(_) => {
-                            break;
-                        }
+                Some(receiver) => {
+                    while let Ok(item) = receiver.try_recv() {
+                        received.push(item);
                     }
-                },
+                }
                 None => {}
             }
             for item in received {
-                self.handle_incoming(item.0, item.1);
+                self.add_message(item.name, item.content);
             }
 
             let key_code: KeyCode;
-            //wait a short time for a key, so the incoming messages are shown quickly
+            //wait at most a bit for a key, so the new messages are shown
             if event::poll(Duration::from_millis(100))? {
                 let key_event = event::read().unwrap().as_key_press_event();
                 match key_event {
@@ -842,12 +823,14 @@ impl App {
             }
             match key_code {
                 KeyCode::Esc => {
-                    self.leave_chat();
+                    self.close_chat();
                     self.screen = ScreenStates::Main;
                     return Ok(());
                 }
                 KeyCode::Char(character) => {
-                    self.input.push(character);
+                    if self.input.chars().count() < MAX_MESSAGE {
+                        self.input.push(character);
+                    }
                 }
                 KeyCode::Backspace => {
                     self.input.pop();
@@ -864,13 +847,21 @@ impl App {
                 }
                 KeyCode::Enter => {
                     if !self.input.is_empty() {
-                        let text = pack(self.user.name.as_str(), self.input.as_str());
-                        send_to_all(&mut self.peers, None, text.as_str());
-                        let name = self.user.name.clone();
-                        let content = self.input.clone();
-                        self.add_message(name.as_str(), content.as_str());
+                        let text = self.input.clone();
                         self.input.clear();
                         self.scroll = 0;
+                        self.add_message(self.user.name.clone(), text.clone());
+
+                        let mut errors: Vec<String> = Vec::new();
+                        match &self.chat_peers {
+                            Some(peers) => {
+                                errors = send_to_all(peers, None, self.user.name.as_str(), text.as_str());
+                            }
+                            None => {}
+                        }
+                        for error in errors {
+                            self.add_message(String::from("system"), error);
+                        }
                     }
                 }
                 _ => {}
