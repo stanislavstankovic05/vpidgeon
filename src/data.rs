@@ -4,7 +4,6 @@ use std::net::*;
 use std::string::*;
 use std::sync::{Arc, Mutex};
 use whoami::*;
-use crate::cripto::Session;
 #[derive(Clone)]
 pub struct User {
     pub private_ip: Ipv4Addr,
@@ -31,16 +30,13 @@ pub struct Message {
     pub reply_to: Option<Box<Message>>,
     pub content: String,
 }
-/*
- * Messages will be stored locally.
- */
 
-struct Connection {
-    self_peer: User,
-    peer: User,
-    message_list: Vec<Message>,
-    crypto: String,
-    key: String,
+pub struct Connection {
+    pub self_peer: User,
+    pub peer: User,
+    pub message_list: Vec<Message>,
+    pub stream: TcpStream,
+    pub session: Arc<Mutex<Session>>,
 }
 
 // impl Connection {
@@ -48,10 +44,44 @@ struct Connection {
 //     fn create_handshake(),
 // }
 
-/*
- * one connection to another peer, with the keys made by the handshake
- */
-pub struct Peer {
-    pub stream: TcpStream,
-    pub session: Arc<Mutex<Session>>,
+impl Connection {
+    pub fn new(stream: TcpStream, session: Session) -> Self {
+        let mut peer = User::default();
+        peer.name = String::new();
+        Self {
+            self_peer: (User::default()),
+            peer: (peer),
+            message_list: (Vec::new()),
+            stream: (stream),
+            session: (Arc::new(Mutex::new(session))),
+        }
+    }
+}
+
+pub struct Session {
+    pub transport: snow::TransportState,
+}
+
+impl Session {
+    pub fn encrypt(&mut self, plaintext: &[u8]) -> std::result::Result<Vec<u8>, String> {
+        let mut buffer: Vec<u8> = vec![0; plaintext.len() + 16];
+        match self.transport.write_message(plaintext, &mut buffer) {
+            Ok(length) => {
+                buffer.truncate(length);
+                Ok(buffer)
+            }
+            Err(err) => Err(String::from("Couldnt encrypt: ") + err.to_string().as_str()),
+        }
+    }
+
+    pub fn decrypt(&mut self, ciphertext: &[u8]) -> std::result::Result<Vec<u8>, String> {
+        let mut buffer: Vec<u8> = vec![0; ciphertext.len()];
+        match self.transport.read_message(ciphertext, &mut buffer) {
+            Ok(length) => {
+                buffer.truncate(length);
+                Ok(buffer)
+            }
+            Err(err) => Err(String::from("Couldnt decrypt: ") + err.to_string().as_str()),
+        }
+    }
 }

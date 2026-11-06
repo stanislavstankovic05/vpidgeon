@@ -10,6 +10,8 @@ mod cripto;
 pub mod data;
 mod network;
 mod server;
+#[cfg(test)]
+mod tests;
 mod tui;
 fn main() {
     // let mut user: data::User = User {

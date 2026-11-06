@@ -1,6 +1,6 @@
 use crate::{
     chat::{close_all, send_to_all, start_readers, Incoming, MAX_MESSAGE},
-    data::{Message, Peer, User},
+    data::{Message, Connection, User},
     client::join_server,
     server::create_server,
     server::lead_join,
@@ -91,11 +91,11 @@ pub struct App {
     scroll: usize,
     join_status: String,
     join_result: Option<
-        std::sync::mpsc::Receiver<std::result::Result<(String, Vec<Peer>), String>>,
+        std::sync::mpsc::Receiver<std::result::Result<(String, Vec<Connection>), String>>,
     >,
-    peers: Vec<Peer>,
+    peers: Vec<Connection>,
     is_lead: bool,
-    chat_peers: Option<std::sync::Arc<Vec<Peer>>>,
+    chat_peers: Option<std::sync::Arc<Vec<Connection>>>,
     incoming: Option<std::sync::mpsc::Receiver<Incoming>>,
 }
 

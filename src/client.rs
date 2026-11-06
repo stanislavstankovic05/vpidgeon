@@ -1,11 +1,10 @@
-use crate::cripto::{handshake_lead, handshake_member};
-use crate::data::Peer;
+use crate::cripto::run_handshake;
+use crate::data::Connection;
 use socket2::{Domain, Protocol, Socket, Type};
 use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -16,7 +15,7 @@ pub fn join_server(
     ip: &str,
     code: &str,
     psk: &str,
-) -> std::result::Result<(String, Vec<Peer>), String> {
+) -> std::result::Result<(String, Vec<Connection>), String> {
     let server_address: SocketAddr = match format!("{}:{}", ip, SERVER_PORT).parse() {
         Ok(address) => address,
         Err(err) => {
@@ -68,18 +67,18 @@ pub fn join_server(
 
     drop(stream);
 
-    let mut you = String::new();
-    let mut lead = String::new();
+    let mut self_peer = String::new();
+    let mut host_peer = String::new();
     for line in peers.lines() {
         if line.starts_with("YOU ") {
-            you = String::from(&line[4..]);
+            self_peer = String::from(&line[4..]);
         }
         if line.starts_with("LEAD ") {
-            lead = String::from(&line[5..]);
+            host_peer = String::from(&line[5..]);
         }
     }
 
-    if you == lead {
+    if self_peer == host_peer {
         let mut handles = Vec::new();
         let mut index = 0;
         for line in peers.lines() {
@@ -88,21 +87,32 @@ pub fn join_server(
                 let server_ip = String::from(ip);
                 let server_code = String::from(code);
                 let secret = String::from(psk);
-                let handle = std::thread::spawn(move || -> std::result::Result<Peer, String> {
-                    let mut stream =
-                        connect_relay(server_ip.as_str(), server_code.as_str(), "LEAD", index)?;
-                    let session = handshake_lead(&mut stream, secret.as_str())?;
-                    Ok(Peer {
-                        stream,
-                        session: Arc::new(Mutex::new(session)),
-                    })
+                let handle = std::thread::spawn(move || -> std::result::Result<Connection, String> {
+                    let mut stream = match connect_relay(
+                        server_ip.as_str(),
+                        server_code.as_str(),
+                        "LEAD",
+                        index,
+                    ) {
+                        Ok(stream) => stream,
+                        Err(message) => {
+                            return Err(message);
+                        }
+                    };
+                    let session = match run_handshake(&mut stream, secret.as_str(), false) {
+                        Ok(session) => session,
+                        Err(message) => {
+                            return Err(message);
+                        }
+                    };
+                    Ok(Connection::new(stream, session))
                 });
                 handles.push(handle);
             }
         }
 
         let total = handles.len();
-        let mut connected: Vec<Peer> = Vec::new();
+        let mut connected: Vec<Connection> = Vec::new();
         let mut errors = String::new();
         for handle in handles {
             match handle.join().unwrap() {
@@ -128,27 +138,33 @@ pub fn join_server(
     for line in peers.lines() {
         if line.starts_with("MEMBER ") {
             index = index + 1;
-            if &line[7..] == you.as_str() {
+            if &line[7..] == self_peer.as_str() {
                 my_index = index;
             }
         }
     }
     if my_index == 0 {
-        return Err(String::from("Your address is not in the list from the server"));
+        return Err(String::from(
+            "Your address is not in the list from the server",
+        ));
     }
 
-    let mut stream = connect_relay(ip, code, "MEMBER", my_index)?;
-    let session = handshake_member(&mut stream, psk)?;
-    let peer = Peer {
-        stream,
-        session: Arc::new(Mutex::new(session)),
+    let mut stream = match connect_relay(ip, code, "MEMBER", my_index) {
+        Ok(stream) => stream,
+        Err(message) => {
+            return Err(message);
+        }
     };
+    let session = match run_handshake(&mut stream, psk, true) {
+        Ok(session) => session,
+        Err(message) => {
+            return Err(message);
+        }
+    };
+    let peer = Connection::new(stream, session);
     Ok((String::from("Connected to the lead"), vec![peer]))
 }
 
-/*
- * the vm passes the bytes between the lead and each member, it answers PAIRED when both sides are connected
- */
 pub fn connect_relay(
     ip: &str,
     code: &str,
@@ -180,7 +196,6 @@ pub fn connect_relay(
         }
     }
 
-    //read one byte at a time, so nothing after the newline is taken from the peer
     let mut answer = String::new();
     let mut byte = [0u8; 1];
     loop {
@@ -228,17 +243,15 @@ pub fn connect_peer(local_port: u16, peer: &str) -> std::result::Result<TcpStrea
         socket.set_reuse_port(true).unwrap();
 
         match socket.bind(&local_address.into()) {
-            Ok(_) => {
-                match socket.connect_timeout(&peer_address.into(), Duration::from_secs(1)) {
-                    Ok(_) => {
-                        return Ok(socket.into());
-                    }
-                    Err(err) => {
-                        last_error = format!("{:?} {}", err.kind(), err.raw_os_error().unwrap_or(0));
-                        std::thread::sleep(Duration::from_millis(200));
-                    }
+            Ok(_) => match socket.connect_timeout(&peer_address.into(), Duration::from_secs(1)) {
+                Ok(_) => {
+                    return Ok(socket.into());
                 }
-            }
+                Err(err) => {
+                    last_error = format!("{:?} {}", err.kind(), err.raw_os_error().unwrap_or(0));
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            },
             Err(err) => {
                 last_error = format!("bind {:?} {}", err.kind(), err.raw_os_error().unwrap_or(0));
                 std::thread::sleep(Duration::from_millis(200));

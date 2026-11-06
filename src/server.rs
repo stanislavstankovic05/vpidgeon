@@ -1,8 +1,3 @@
-/*
- * based on the link on the cloud VM, we start a dummy server to get the public ips.
- *
- * we need to that VM. it will be a link, the user needs to set that link
- */
 use dotenvy::*;
 use ssh2::*;
 use std::env;
@@ -163,7 +158,7 @@ fn vm_run(vm_session: &ssh2::Session, command: &str) -> std::result::Result<i32,
     }
 }
 
-pub fn lead_join(code: &str, psk: &str) -> std::result::Result<(String, Vec<crate::data::Peer>), String> {
+pub fn lead_join(code: &str, psk: &str) -> std::result::Result<(String, Vec<crate::data::Connection>), String> {
     dotenvy::from_filename(".env");
     let ip = match env::var("VM_IP") {
         Ok(value) => value,
