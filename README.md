@@ -1,8 +1,8 @@
-<p align="center">
-  <img src="assets/pigeon.gif" alt="vpidgeon" width="160">
-</p>
+<img src="assets/pigeon.gif" alt="vpidgeon" width="140" align="right">
 
 # vpidgeon
+
+## Encrypted peer-to-peer terminal chat
 
 A terminal messaging app (TUI) written in Rust, where people chat with each other.
 
