@@ -8,7 +8,6 @@ mod chat;
 mod client;
 mod cripto;
 pub mod data;
-mod network;
 mod server;
 #[cfg(test)]
 mod tests;
