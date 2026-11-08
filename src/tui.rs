@@ -64,6 +64,18 @@ use x25519_dalek::*;
        -----------------------------------------------
 
 */
+
+const LOGO: [&str; 8] = [
+    r" \`-.",
+    r"  \  `.      __",
+    r"   \   \___/ o`>",
+    r"    `.        /",
+    r"      `-.__.-'",
+    r"        _||_",
+    r"       |\__/|",
+    r"       |____|",
+];
+
 #[derive(Default, PartialEq)]
 pub enum ScreenStates {
     #[default]
@@ -154,6 +166,32 @@ impl App {
         layout_border[0]
     }
 
+    fn render_logo(&self, frame: &mut Frame, area: Rect) {
+        let mut width = 0;
+        for line in LOGO {
+            if line.len() > width {
+                width = line.len();
+            }
+        }
+        let width = width as u16;
+        let height = LOGO.len() as u16;
+        if area.width < width || area.height < height {
+            return;
+        }
+        let logo_area = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+            width,
+            height,
+        );
+
+        let mut lines: Vec<ratatui::text::Line> = Vec::new();
+        for line in LOGO {
+            lines.push(ratatui::text::Line::from(line));
+        }
+        frame.render_widget(Paragraph::new(lines), logo_area);
+    }
+
     fn render_main(&self, frame: &mut Frame) {
         let area = self.render_border(frame);
 
@@ -232,6 +270,8 @@ impl App {
             },
             layout_body[3],
         );
+
+        self.render_logo(frame, layout_body[4]);
 
         frame.render_widget(
             Paragraph::new("Version 0.0.1")

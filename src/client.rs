@@ -1,41 +1,24 @@
 use crate::cripto::run_handshake;
 use crate::data::Connection;
-use socket2::{Domain, Protocol, Socket, Type};
 use std::io::Read;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::time::Duration;
-use std::time::Instant;
 
 const SERVER_PORT: &str = "9000";
-pub const LOCAL_PORT: u16 = 9001;
 
 pub fn join_server(
     ip: &str,
     code: &str,
     psk: &str,
 ) -> std::result::Result<(String, Vec<Connection>), String> {
-    let server_address: SocketAddr = match format!("{}:{}", ip, SERVER_PORT).parse() {
-        Ok(address) => address,
-        Err(err) => {
-            return Err(String::from("Wrong server ip: ") + err.to_string().as_str());
-        }
-    };
-    let local_address: SocketAddr = ([0, 0, 0, 0], LOCAL_PORT).into();
-
-    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
-    socket.set_reuse_address(true).unwrap();
-    #[cfg(unix)]
-    socket.set_reuse_port(true).unwrap();
-    socket.bind(&local_address.into()).unwrap();
-    match socket.connect(&server_address.into()) {
-        Ok(_) => {}
+    let mut stream = match TcpStream::connect(format!("{}:{}", ip, SERVER_PORT)) {
+        Ok(stream) => stream,
         Err(err) => {
             return Err(String::from("Couldnt connect to the server: ") + err.to_string().as_str());
         }
-    }
-    let mut stream: TcpStream = socket.into();
+    };
 
     stream
         .set_read_timeout(Some(Duration::from_secs(310)))
@@ -88,7 +71,7 @@ pub fn join_server(
                 let server_code = String::from(code);
                 let secret = String::from(psk);
                 let handle = std::thread::spawn(move || -> std::result::Result<Connection, String> {
-                    let mut stream = match connect_relay(
+                    let mut stream = match connect_server(
                         server_ip.as_str(),
                         server_code.as_str(),
                         "LEAD",
@@ -149,7 +132,7 @@ pub fn join_server(
         ));
     }
 
-    let mut stream = match connect_relay(ip, code, "MEMBER", my_index) {
+    let mut stream = match connect_server(ip, code, "MEMBER", my_index) {
         Ok(stream) => stream,
         Err(message) => {
             return Err(message);
@@ -165,7 +148,7 @@ pub fn join_server(
     Ok((String::from("Connected to the lead"), vec![peer]))
 }
 
-pub fn connect_relay(
+pub fn connect_server(
     ip: &str,
     code: &str,
     role: &str,
@@ -180,7 +163,7 @@ pub fn connect_relay(
     let mut stream = match TcpStream::connect_timeout(&server_address, Duration::from_secs(10)) {
         Ok(stream) => stream,
         Err(err) => {
-            return Err(String::from("Couldnt connect to the relay: ") + err.to_string().as_str());
+            return Err(String::from("Couldnt connect to the server: ") + err.to_string().as_str());
         }
     };
     stream.set_nodelay(true).unwrap();
@@ -188,11 +171,11 @@ pub fn connect_relay(
         .set_read_timeout(Some(Duration::from_secs(60)))
         .unwrap();
 
-    let hello = format!("RELAY {} {} {}\n", code, role, index);
-    match stream.write_all(hello.as_bytes()) {
+    let connect_to_vm_test = format!("RELAY {} {} {}\n", code, role, index);
+    match stream.write_all(connect_to_vm_test.as_bytes()) {
         Ok(_) => {}
         Err(err) => {
-            return Err(String::from("Couldnt write to the relay: ") + err.to_string().as_str());
+            return Err(String::from("Couldnt write to the server: ") + err.to_string().as_str());
         }
     }
 
@@ -201,7 +184,7 @@ pub fn connect_relay(
     loop {
         match stream.read(&mut byte) {
             Ok(0) => {
-                return Err(String::from("The relay closed before the other peer came"));
+                return Err(String::from("The server closed before the other peer came"));
             }
             Ok(_) => {
                 if byte[0] == b'\n' {
@@ -210,56 +193,15 @@ pub fn connect_relay(
                 answer.push(byte[0] as char);
             }
             Err(err) => {
-                return Err(String::from("The other peer did not reach the relay: ")
+                return Err(String::from("The other peer did not reach the server: ")
                     + err.to_string().as_str());
             }
         }
     }
     if answer != "PAIRED" {
-        return Err(String::from("Wrong answer from the relay: ") + answer.as_str());
+        return Err(String::from("Wrong answer from the server: ") + answer.as_str());
     }
 
     stream.set_read_timeout(None).unwrap();
     Ok(stream)
-}
-
-pub fn connect_peer(local_port: u16, peer: &str) -> std::result::Result<TcpStream, String> {
-    let peer_address: SocketAddr = match peer.parse() {
-        Ok(address) => address,
-        Err(err) => {
-            return Err(String::from("Wrong peer address: ") + err.to_string().as_str());
-        }
-    };
-    let local_address: SocketAddr = ([0, 0, 0, 0], local_port).into();
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut last_error = String::from("no attempt was made");
-    let mut attempts = 0;
-
-    while Instant::now() < deadline {
-        attempts = attempts + 1;
-        let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
-        socket.set_reuse_address(true).unwrap();
-        #[cfg(unix)]
-        socket.set_reuse_port(true).unwrap();
-
-        match socket.bind(&local_address.into()) {
-            Ok(_) => match socket.connect_timeout(&peer_address.into(), Duration::from_secs(1)) {
-                Ok(_) => {
-                    return Ok(socket.into());
-                }
-                Err(err) => {
-                    last_error = format!("{:?} {}", err.kind(), err.raw_os_error().unwrap_or(0));
-                    std::thread::sleep(Duration::from_millis(200));
-                }
-            },
-            Err(err) => {
-                last_error = format!("bind {:?} {}", err.kind(), err.raw_os_error().unwrap_or(0));
-                std::thread::sleep(Duration::from_millis(200));
-            }
-        }
-    }
-    Err(format!(
-        "Couldnt connect to the peer, {} attempts, last error: {}",
-        attempts, last_error
-    ))
 }

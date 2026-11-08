@@ -1,12 +1,14 @@
-<img src="assets/pigeon.gif" alt="vpidgeon" width="140" align="right">
-
 # vpidgeon
 
-## Encrypted peer-to-peer terminal chat
+<img src="assets/pigeon.gif" alt="vpidgeon" width="140" align="right">
+
+**Encrypted peer-to-peer terminal chat**
 
 A terminal messaging app (TUI) written in Rust, where people chat with each other.
 
 The lead needs a server (a small VM). It makes the ip exchange, and then it relays the connections: the lead connects through the VM to every member, because home routers often block a direct connection between two peers. The VM only passes the bytes along. Only the lead needs the VM. The others just need the app.
+
+<br clear="right">
 
 ## Settings
 
@@ -63,6 +65,10 @@ Use the arrow keys and Enter in the menu. Esc goes back, and Tab switches betwee
 Both of you have to join within 100 seconds of the lead opening the waiting screen. A direct chat starts as soon as the second person joins.
 
 The messages are encrypted end to end with [snow](https://github.com/mcginty/snow) (Noise protocol). The VM only passes the encrypted bytes between the peers. The addresses are saved in `peers.txt`.
+
+## TODO
+
+- A settings page in the app for the VM (ip, name, ssh key, port), so the lead doesn't have to write the `.env` by hand.
 
 ## License
 
