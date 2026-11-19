@@ -1,0 +1,3 @@
+VM_IP="136.80.53.248"
+VM_NAME=vpidgeon
+SSH_key=/Users/davidstan/.ssh/vpidgeon_key

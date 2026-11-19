@@ -285,14 +285,7 @@ impl App {
      * copy of the dummy .env with the generated code, it is uploaded to the vm
      */
     fn write_vm_env(&self) -> std::result::Result<(), String> {
-        let template = match std::fs::read_to_string("vm_env.template") {
-            Ok(text) => text,
-            Err(err) => {
-                return Err(
-                    String::from("Couldnt read vm_env.template: ") + err.to_string().as_str()
-                );
-            }
-        };
+        let template = String::from(include_str!("../vm_env.template"));
         //option 0 is the direct chat, option 1 is the group chat
         let mut seconds = "100";
         let mut max_members = "20";
@@ -304,15 +297,15 @@ impl App {
             .replace("CHANGE_ME", self.join_code.as_str())
             .replace("CHANGE_TIMEOUT", seconds)
             .replace("CHANGE_MAX", max_members);
-        match std::fs::create_dir_all("vm") {
-            Ok(_) => {}
-            Err(err) => {
-                return Err(String::from("Couldnt create the vm folder: ") + err.to_string().as_str());
+        let env_path = match crate::data::config_path("vm.env") {
+            Ok(path) => path,
+            Err(message) => {
+                return Err(message);
             }
-        }
-        match std::fs::write("vm/.env", vm_env) {
+        };
+        match std::fs::write(&env_path, vm_env) {
             Ok(_) => Ok(()),
-            Err(err) => Err(String::from("Couldnt write vm/.env: ") + err.to_string().as_str()),
+            Err(err) => Err(String::from("Couldnt write vm.env: ") + err.to_string().as_str()),
         }
     }
 

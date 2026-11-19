@@ -85,3 +85,20 @@ impl Session {
         }
     }
 }
+
+pub fn config_path(name: &str) -> std::result::Result<std::path::PathBuf, String> {
+    let home = match std::env::home_dir() {
+        Some(home) => home,
+        None => {
+            return Err(String::from("Couldnt find the home folder"));
+        }
+    };
+    let folder = home.join(".config").join("porumbel");
+    match std::fs::create_dir_all(&folder) {
+        Ok(_) => {}
+        Err(err) => {
+            return Err(String::from("Couldnt create ~/.config/porumbel: ") + err.to_string().as_str());
+        }
+    }
+    Ok(folder.join(name))
+}

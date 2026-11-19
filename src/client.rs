@@ -41,7 +41,13 @@ pub fn join_server(
         ));
     }
 
-    match std::fs::write("peers.txt", &peers) {
+    let peers_path = match crate::data::config_path("peers.txt") {
+        Ok(path) => path,
+        Err(message) => {
+            return Err(message);
+        }
+    };
+    match std::fs::write(&peers_path, &peers) {
         Ok(_) => {}
         Err(err) => {
             return Err(String::from("Couldnt save peers.txt: ") + err.to_string().as_str());

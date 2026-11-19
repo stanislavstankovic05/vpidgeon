@@ -14,16 +14,17 @@ struct VMConnection {
 }
 
 pub fn create_server() -> std::result::Result<String, String> {
-    let server_file = match std::fs::read("vm_server.py") {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            return Err(String::from("Couldnt read vm_server.py: ") + err.to_string().as_str());
+    let server_file = include_bytes!("../vm_server.py");
+    let env_path = match crate::data::config_path("vm.env") {
+        Ok(path) => path,
+        Err(message) => {
+            return Err(message);
         }
     };
-    let env_file = match std::fs::read("vm/.env") {
+    let env_file = match std::fs::read(&env_path) {
         Ok(bytes) => bytes,
         Err(err) => {
-            return Err(String::from("Couldnt read vm/.env: ") + err.to_string().as_str());
+            return Err(String::from("Couldnt read vm.env: ") + err.to_string().as_str());
         }
     };
 
@@ -31,7 +32,7 @@ pub fn create_server() -> std::result::Result<String, String> {
 
     vm_run(&vm_session, "pkill -f \"[v]m_server.py\"")?;
 
-    vm_upload(&vm_session, "vm_server.py", &server_file, 0o644)?;
+    vm_upload(&vm_session, "vm_server.py", server_file, 0o644)?;
     vm_upload(&vm_session, ".env", &env_file, 0o600)?;
 
     vm_run(
@@ -46,7 +47,12 @@ pub fn create_server() -> std::result::Result<String, String> {
     Ok(String::from("Server started on the VM"))
 }
 pub fn vm_connect() -> std::result::Result<(String, ssh2::Session), String> {
-    let filename = ".env";
+    let filename = match crate::data::config_path(".env") {
+        Ok(path) => path,
+        Err(message) => {
+            return Err(message);
+        }
+    };
     dotenvy::from_filename(filename);
     let vm_connection = VMConnection {
         ip: match env::var("VM_IP") {
@@ -159,7 +165,13 @@ fn vm_run(vm_session: &ssh2::Session, command: &str) -> std::result::Result<i32,
 }
 
 pub fn lead_join(code: &str, psk: &str) -> std::result::Result<(String, Vec<crate::data::Connection>), String> {
-    dotenvy::from_filename(".env");
+    let filename = match crate::data::config_path(".env") {
+        Ok(path) => path,
+        Err(message) => {
+            return Err(message);
+        }
+    };
+    dotenvy::from_filename(filename);
     let ip = match env::var("VM_IP") {
         Ok(value) => value,
         Err(err) => return Err(String::from("VM_IP missing in .env")),

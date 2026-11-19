@@ -28,7 +28,7 @@ The lead needs a server (a small VM). It makes the ip exchange, and then it rela
 
 4. In the console open the VM, click Edit, and add the output of `cat ~/.ssh/vpidgeon_key.pub` under SSH Keys. Save.
 
-5. Create a `.env` file in this folder. Never commit it:
+5. Create the file `~/.config/porumbel/.env`:
 
    ```
    VM_IP=<external ip of the VM>
@@ -38,7 +38,7 @@ The lead needs a server (a small VM). It makes the ip exchange, and then it rela
 
    The external ip changes every time the VM is restarted, so update `VM_IP`.
 
-6. The server config is `vm_env.template`. The app fills in the code, the timeout and the maximum number of peers (100 seconds and 2 peers for a direct chat, 100 seconds and 20 peers for a group chat), so only change the port. The server stops waiting as soon as the chat is full:
+6. The server config is `vm_env.template`. It is built into the app, so after changing it run `cargo build` again. The app fills in the code, the timeout and the maximum number of peers (100 seconds and 2 peers for a direct chat, 100 seconds and 20 peers for a group chat), so only change the port. The server stops waiting as soon as the chat is full:
 
    ```
    VPIDGEON_CODE=CHANGE_ME
@@ -64,7 +64,7 @@ Use the arrow keys and Enter in the menu. Esc goes back, and Tab switches betwee
 
 Both of you have to join within 100 seconds of the lead opening the waiting screen. A direct chat starts as soon as the second person joins.
 
-The messages are encrypted end to end with [snow](https://github.com/mcginty/snow) (Noise protocol). The VM only passes the encrypted bytes between the peers. The addresses are saved in `peers.txt`.
+The messages are encrypted end to end with [snow](https://github.com/mcginty/snow) (Noise protocol). The VM only passes the encrypted bytes between the peers. The addresses are saved in `~/.config/porumbel/peers.txt`.
 
 ## TODO
 
