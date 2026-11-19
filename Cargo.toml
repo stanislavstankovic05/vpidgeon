@@ -23,3 +23,15 @@ ssh2 = "0.9.6"
 dotenvy = "0.15.7"
 socket2 = { version = "0.6.5", features = ["all"] }
 snow = "0.10.0"
+
+[package.metadata.deb]
+maintainer = "David Stan <dfstn@pm.me>"
+copyright = "2026, David Stan"
+license-file = ["LICENSE", "0"]
+depends = "$auto"
+section = "net"
+extended-description = "Encrypted peer-to-peer terminal chat over a relay VM."
+assets = [
+    ["target/release/porumbel", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/porumbel/README", "644"],
+]
