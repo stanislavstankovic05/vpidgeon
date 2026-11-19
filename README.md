@@ -4,7 +4,7 @@
 
 **Encrypted peer-to-peer terminal chat**
 
-A terminal messaging app (TUI) written in Rust, where people chat with each other.
+A terminal messaging app (TUI) written in Rust, where people chat with each other. This was built for experimenting and learning purposes.
 
 The lead needs a server (a small VM). It makes the ip exchange, and then it relays the connections: the lead connects through the VM to every member, because home routers often block a direct connection between two peers. The VM only passes the bytes along. Only the lead needs the VM. The others just need the app.
 
